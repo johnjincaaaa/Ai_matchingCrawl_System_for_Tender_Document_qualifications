@@ -1,198 +1,137 @@
 # 标书AI匹配系统 - 项目说明文档
+<div >
+    <strong>基于Python+Streamlit的智能化标书资质自动匹配解决方案</strong>
+</div>
 
-## 项目概述
+## 一、项目概述
 ![img_1.png](pics/img_1.png)
 ![img.png](pics/img.png)
 
-这是一个基于Python和Streamlit开发的标书资质自动匹配系统，主要用于：
-- 自动爬取浙江省政府采购网的招标公告
-- 解析标书文件（PDF、DOC、DOCX等格式）
-- 使用AI分析项目资质要求
-- 自动匹配公司资质库（A类证书库和B类规则库）
-- 生成Excel格式的匹配报告
+本系统是面向招投标场景的智能化解决方案，基于Python与Streamlit构建，核心目标是实现标书资质匹配的自动化、智能化，降低人工筛选成本，提升标书响应效率。核心能力包括：
+- 🕷️ 自动化爬取浙江省政府采购网招标公告，支持多区域/多分类筛选
+- 📄 全格式标书解析（PDF/DOC/DOCX/ZIP等），兼容复杂表格与特殊格式
+- 🤖 基于AI的资质要求提取与智能匹配，支持本地/云端双模型部署
+- 📊 自动化生成结构化Excel匹配报告，可视化展示匹配结果
+- 🗄️ 完善的资质库管理（A类证书库/B类规则库），支持灵活配置
 
-## 技术栈
+## 二、技术栈选型
+| 分类    | 技术/工具                | 版本/说明                                        |
+|-------|----------------------|----------------------------------------------|
+| 前端框架  | Streamlit            | 1.51.0（轻量化Web交互）                             |
+| 后端语言  | Python               | 3.12（核心开发语言）                                 |
+| 数据库   | SQLite               | 轻量级文件数据库，无需部署                                |
+| AI引擎  | Ollama               | 支持本地（llama3:8b）/云端（qwen3-coder:480b-cloud）模型 |
+| 核心依赖库 | LangChain            | AI应用开发框架                                     |
+|       | SQLAlchemy           | 数据库ORM管理                                     |
+|       | PyPDF2/PyMuPDF       | PDF文件解析                                      |
+|       | python-docx/win32com | Word文档解析（兼容DOC/DOCX）                         |
+|       | openpyxl             | Excel报告生成                                    |
+|       | requests             | 网络请求（爬虫核心）                                   |
 
-- **前端框架**: Streamlit 1.51.0
-- **后端语言**: Python 3.12
-- **数据库**: SQLite
-- **AI模型**: Ollama (支持本地模型和云模型)
-- **主要依赖**: 
-  - LangChain (AI框架)
-  - SQLAlchemy (ORM)
-  - PyPDF2, PyMuPDF (PDF解析)
-  - python-docx (Word文档解析)
-  - win32com (Windows COM组件，用于DOC文件)
-  - openpyxl (Excel生成)
-  - requests (HTTP请求)
-
-## 项目结构
-
+## 三、项目目录结构
 ```
 a/
-├── app.py                      # Streamlit主应用入口
-├── config.py                   # 配置文件（爬虫、AI、数据库等配置）
+├── app.py                      # Streamlit主应用入口（Web交互核心）
+├── config.py                   # 全局配置中心（爬虫/AI/存储等）
 ├── auto_run_full_process.py    # 命令行全流程执行脚本
-├── check_task_status.py        # 任务状态检查脚本
-├── requirements.txt            # Python依赖包列表
-├── tender_system.db           # SQLite数据库文件
-├── task_schedules.json        # 定时任务配置
+├── check_task_status.py        # 任务状态监控脚本
+├── requirements.txt            # Python依赖清单
+├── tender_system.db           # SQLite核心数据库
+├── task_schedules.json        # 定时任务配置文件
 │
 ├── spider/                    # 爬虫模块
-│   └── tender_spider.py      # 浙江省招标网爬虫
+│   └── tender_spider.py      # 浙江省政府采购网爬虫（多区域/分类支持）
 │
 ├── parser/                    # 文件解析模块
-│   └── file_parser.py        # 文件解析器（支持PDF、DOC、DOCX、ZIP）
+│   └── file_parser.py        # 多格式标书解析器（PDF/DOC/DOCX/ZIP）
 │
 ├── ai/                        # AI分析模块
-│   └── qualification_analyzer.py  # 资质分析器
+│   └── qualification_analyzer.py  # 资质提取/比对/服务类判断核心
 │
 ├── report/                    # 报告生成模块
-│   └── report_generator.py   # Excel报告生成器
+│   └── report_generator.py   # Excel匹配报告生成器（样式/筛选优化）
 │
-├── utils/                     # 工具模块
-│   ├── db.py                 # 数据库操作
-│   ├── log.py                # 日志管理
-│   ├── task_scheduler.py     # Windows任务计划管理
-│   ├── storage_manager.py    # 存储空间管理
-│   └── auto_cleanup.py       # 自动清理脚本
+├── utils/                     # 通用工具模块
+│   ├── db.py                 # 数据库操作（CRUD/索引优化）
+│   ├── log.py                # 日志管理（轮转/分级）
+│   ├── task_scheduler.py     # Windows定时任务管理
+│   ├── storage_manager.py    # 存储空间监控/清理
+│   └── auto_cleanup.py       # 旧文件自动清理脚本
 │
 ├── tasks/                     # 任务调度模块
-│   └── scheduler.py          # Celery任务调度（可选）
+│   └── scheduler.py          # Celery任务调度（可选扩展）
 │
-├── prompts/                   # AI提示词模板
+├── prompts/                   # AI提示词模板库
 │   ├── extract_prompt.txt    # 资质提取提示词
 │   ├── compare_prompt.txt    # 资质比对提示词
-│   └── service_check_prompt.txt  # 服务类判断提示词
+│   └── service_check_prompt.txt  # 服务类项目判断提示词
 │
-├── docs/                      # 文档目录
-│   ├── SPIDER_QUOTA_LOGIC.md
-│   ├── SPIDER_DAYS_BEFORE_LOGIC.md
+├── docs/                      # 专项文档目录
+│   ├── SPIDER_QUOTA_LOGIC.md  # 爬虫配额逻辑说明
+│   ├── SPIDER_DAYS_BEFORE_LOGIC.md # 时间筛选逻辑说明
 │   └── ...
 │
-├── tender_files/              # 标书文件存储目录
-├── reports/                   # 报告文件存储目录
-└── logs/                      # 日志文件目录
+├── tender_files/              # 标书文件存储目录（分类存储）
+├── reports/                   # 匹配报告输出目录
+└── logs/                      # 系统日志目录（按日期轮转）
 ```
 
-## 核心功能模块
+## 四、核心功能模块
+### 4.1 爬虫模块（spider/tender_spider.py）
+#### 核心能力
+- 定向爬取浙江省政府采购网（zfcg.czt.zj.gov.cn）招标公告
+- 支持「政府类/非政府类」分类+12个地级市区域精准筛选
+- 自动下载标书文件，兼容PDF/DOC/DOCX等格式
 
-### 1. 爬虫模块 (spider/tender_spider.py)
-
-**功能**：
-- 爬取浙江省政府采购网（zfcg.czt.zj.gov.cn）的招标公告
-- 支持政府类和非政府类两个分类
-- 支持12个地级市的区域筛选
-- 自动下载标书文件（PDF、DOC、DOCX等）
-
-**主要配置**（config.py）：
-- `daily_limit`: 每日爬取限制（默认4个）
-- `zhejiang_max_pages`: 最大爬取页数（默认35页）
-- `days_before`: 时间间隔，爬取最近N天内的文件
-
-**特点**：
-- 自动去重（基于project_id）
-- 支持重试机制
-- 按区域和分类均衡爬取
-
-### 2. 文件解析模块 (parser/file_parser.py)
-
-**支持格式**：
-- PDF: 使用PyPDF2解析，失败时使用OCR（Tesseract）
-- DOCX: 使用python-docx解析
-- DOC: 使用Word COM组件或LibreOffice转换
-- DOCM: 启用宏的Word文档，转换为DOCX后解析
-- ZIP: 自动解压并识别招标文件
-- TXT: 直接读取
-
-**特点**：
-- 完整提取表格内容（评分表）
-- 支持合并单元格处理
-- 自动清理Word进程，防止堵塞
-- 支持文件锁机制，防止并发冲突
-
-### 3. AI分析模块 (ai/qualification_analyzer.py)
-
-**功能**：
-1. **资质提取**：从标书文本中提取评分办法和资质要求
-2. **资质比对**：将项目要求与公司资质库进行匹配
-3. **服务类判断**：自动识别并过滤服务类项目
-
-**AI模型配置**：
-- 支持本地模型（llama3:8b）和云模型（qwen3-coder:480b-cloud）
-- 通过Ollama服务调用
-- 支持CUDA加速
-
-**匹配规则**：
-- **A类证书库**：精确匹配证书要求
-- **B类规则库**：规则匹配（如业绩要求、检测报告、承诺响应等）
-- 排除规则：明确要求政府官方网站备案的，不适用B类规则
-
-**请求频率控制**：
-- 每小时最多80个请求
-- 最小间隔30秒
-- 支持突发请求
-
-### 4. 报告生成模块 (report/report_generator.py)
-
-**功能**：
-- 生成Excel格式的匹配报告
-- 支持按时间、区域、采购类型筛选
-- 自动提取客观分可得分
-- 格式化输出（表头样式、自动筛选等）
-
-**报告字段**：
-- 项目ID、项目名称、省份、城市、区域
-- 采购类型、来源网站、发布时间
-- 文件格式、状态、最终判定
-- 客观分总分值、错误信息
-
-### 5. 数据库模块 (utils/db.py)
-
-**数据表**：
-1. **tender_projects**: 项目主表
-   - 基本信息：项目名称、来源网站、发布时间等
-   - 文件信息：文件路径、文件格式
-   - 分析结果：解析内容、资质要求、比对结果、最终判定
-   - 状态管理：项目状态（待处理、已下载、已解析、已比对、异常）
-
-2. **company_qualifications**: 公司资质表
-   - 分类：企业资质、人员资质、设备要求、业绩要求、其他要求
-
-3. **class_a_certificates**: A类证书库
-   - 证书名称、证书编号、颁发机构、有效期等
-
-4. **class_b_rules**: B类规则库
-   - 规则名称、触发条件、结论、规则类型
-
-**索引优化**：
-- project_id、status、publish_time、final_decision、region等字段已建立索引
-
-## 配置文件说明 (config.py)
-
-### 爬虫配置
+#### 关键配置（config.py）
 ```python
 SPIDER_CONFIG = {
-    "daily_limit": 4,              # 每日爬取限制
-    "zhejiang_max_pages": 35,      # 最大页数
+    "daily_limit": 4,              # 每日爬取数量限制（防反爬）
+    "zhejiang_max_pages": 35,      # 单来源最大爬取页数
     "anti_crawl": {
         "request_interval": 2,     # 请求间隔（秒）
-        "retry_times": 3,          # 重试次数
-        "timeout": 15              # 超时时间（秒）
+        "retry_times": 3,          # 失败重试次数
+        "timeout": 15              # 网络超时阈值
     }
 }
 ```
 
-### AI配置
+#### 特性
+- ✅ 基于project_id的全量去重，避免重复爬取
+- ✅ 按区域/分类均衡爬取，保证数据覆盖度
+- ✅ 失败自动重试，异常链路监控
+
+### 4.2 文件解析模块（parser/file_parser.py）
+#### 支持格式
+| 格式   | 解析方案                        | 特殊处理             |
+|------|-----------------------------|------------------|
+| PDF  | PyPDF2主解析 + Tesseract OCR兜底 | 表格提取、合并单元格处理     |
+| DOCX | python-docx                 | 宏文件（DOCM）转换后解析   |
+| DOC  | Word COM组件 / LibreOffice转换  | 自动清理Word进程，防资源泄漏 |
+| ZIP  | 自动解压                        | 识别压缩包内招标文件       |
+| TXT  | 原生读取                        | 编码自动识别           |
+
+#### 核心特性
+- 完整提取标书内评分表内容，保留原始格式
+- 文件锁机制，避免多进程并发解析冲突
+- 超时控制，适配大文件（>50MB）解析
+
+### 4.3 AI分析模块（ai/qualification_analyzer.py）
+#### 核心能力
+1. **资质提取**：从标书文本中精准提取评分办法、资质要求等核心信息
+2. **资质匹配**：对比公司A类证书库/B类规则库，输出匹配结果
+3. **服务类过滤**：自动识别服务类项目（如咨询/编辑），过滤非目标标书
+
+#### AI配置
 ```python
 AI_CONFIG = {
     "provider": "ollama",
     "ollama": {
-        "default_model": "cloud",  # 默认模型类型
-        "local_model": {...},      # 本地模型配置
-        "cloud_model": {...}       # 云模型配置
+        "default_model": "cloud",  # 本地/云端模型切换
+        "local_model": {"model": "llama3:8b", "host": "localhost:11434"},
+        "cloud_model": {"model": "qwen3-coder:480b-cloud", "timeout": 60}
     },
-    "rate_limiting": {
+    "rate_limiting": {  # 限流配置，避免模型过载
         "enable": True,
         "max_requests_per_hour": 80,
         "min_interval_seconds": 30
@@ -200,157 +139,163 @@ AI_CONFIG = {
 }
 ```
 
-### 存储配置
+#### 匹配规则
+- **A类证书库**：精准匹配证书名称/编号/有效期等硬性要求
+- **B类规则库**：灵活匹配业绩、检测报告、承诺响应等柔性要求
+- **排除规则**：过滤要求政府官网备案的特殊场景
+
+### 4.4 报告生成模块（report/report_generator.py）
+#### 核心能力
+- 生成标准化Excel匹配报告，支持多维度筛选
+- 自动计算客观分可得分/得分率，区分主观/客观评分项
+- 自定义表头样式、自动筛选、条件格式化，提升可读性
+
+#### 核心报告字段
+| 分类     | 字段示例               |
+|--------|--------------------|
+| 项目基础信息 | 项目ID、名称、省份/城市、发布时间 |
+| 文件信息   | 文件格式、存储路径、解析状态     |
+| 匹配结果   | 资质匹配度、客观分总分、最终判定   |
+| 异常信息   | 解析错误、AI分析失败原因      |
+
+### 4.5 数据库模块（utils/db.py）
+#### 核心数据表设计
+| 表名                     | 核心用途            | 索引优化字段                         |
+|------------------------|-----------------|--------------------------------|
+| tender_projects        | 项目主表（全生命周期状态管理） | project_id、status、publish_time |
+| company_qualifications | 公司资质总表          | qualification_type             |
+| class_a_certificates   | A类证书库（精准匹配）     | cert_name、valid_until          |
+| class_b_rules          | B类规则库（灵活匹配）     | rule_type、trigger_condition    |
+
+## 五、系统配置说明
+### 5.1 核心配置（config.py）
 ```python
+# 存储配置
 STORAGE_CONFIG = {
-    "auto_cleanup_enabled": True,
-    "cleanup_interval_days": 30,      # 保留最近30天
-    "disk_warning_threshold": 80.0,   # 磁盘使用率警告阈值
+    "auto_cleanup_enabled": True,    # 自动清理开关
+    "cleanup_interval_days": 30,     # 保留最近30天文件
+    "disk_warning_threshold": 80.0,  # 磁盘使用率告警阈值（%）
 }
 ```
 
-## 使用方式
-
-### 1. Web界面使用（Streamlit）
-
-启动命令：
+## 六、使用指南
+### 6.1 Web界面使用（Streamlit）
+#### 启动命令
 ```bash
 streamlit run app.py
 ```
 
-主要功能页面：
-- **项目列表**：查看所有项目，支持筛选和搜索
-- **流程控制**：执行爬虫、解析、AI分析、生成报告
-- **资质管理**：管理公司资质、A类证书库、B类规则库
-- **定时任务**：创建和管理Windows定时任务
-- **存储管理**：查看存储空间，执行清理
+#### 核心功能页面
+| 页面名称 | 核心功能                |
+|------|---------------------|
+| 项目列表 | 全量项目查询、多维度筛选、关键词搜索  |
+| 流程控制 | 爬虫/解析/AI分析/报告生成一键执行 |
+| 资质管理 | A类证书/B类规则增删改查、批量导入  |
+| 定时任务 | Windows定时任务创建/编辑/删除 |
+| 存储管理 | 磁盘使用率监控、旧文件手动清理     |
 
-### 2. 命令行使用
-
-全流程执行：
+### 6.2 命令行使用
+#### 全流程执行
 ```bash
-python auto_run_full_process.py --daily-limit 10 --days-before 0 --model-type cloud
+python auto_run_full_process.py \
+  --daily-limit 10 \    # 每日爬取数量
+  --days-before 0 \     # 爬取时间范围（0=当日）
+  --model-type cloud \  # AI模型类型（local/cloud）
+  --test-mode           # 测试模式（仅爬取2个文件）
 ```
 
-参数说明：
-- `--daily-limit`: 爬取数量限制
-- `--days-before`: 时间间隔（0表示只爬取当日）
-- `--model-type`: AI模型类型（local/cloud）
-- `--test-mode`: 测试模式（只爬取2个文件）
+### 6.3 定时任务
+- 方式1：Web界面「定时任务」模块可视化配置
+- 方式2：通过`utils/task_scheduler.py`脚本手动创建
+- 支持按日/周/月执行，自动触发全流程任务
 
-### 3. 定时任务
-
-使用Windows任务计划程序创建定时任务：
-- 在Web界面"定时任务"页面创建
-- 或使用 `utils/task_scheduler.py` 手动创建
-
-## 项目状态流转
-
+## 七、项目状态流转
+```mermaid
+graph LR
+    A[待处理] --> B[已下载]
+    B --> C[已解析]
+    C --> D[已比对]
+    A --> E[异常]
+    B --> E[异常]
+    C --> E[异常]
+    D --> E[异常]
 ```
-待处理 → 已下载 → 已解析 → 已比对
-  ↓         ↓         ↓         ↓
-异常      异常      异常      异常
-```
+- **待处理**：项目初始化状态，等待爬取
+- **已下载**：标书文件下载完成，待解析
+- **已解析**：标书内容提取完成，待AI分析
+- **已比对**：AI资质匹配完成，可生成报告
+- **异常**：任意环节失败（如下载失败、解析超时、AI调用异常）
 
-- **待处理**: 初始状态
-- **已下载**: 文件下载完成
-- **已解析**: 文件解析完成，提取了评分表内容
-- **已比对**: AI分析完成，生成了匹配结果
-- **异常**: 处理过程中出错
+## 八、核心特性
+### 8.1 容错机制
+- 解析/AI分析失败自动重试（最多3次）
+- 多次失败自动标记「跳过-多次失败」，不阻塞整体流程
 
-## 重要特性
+### 8.2 智能过滤
+- 服务类项目自动识别并过滤，聚焦核心标书
+- 主观/客观分自动区分，精准计算可得分
 
-### 1. 自动重试机制
-- 解析失败自动重试（最多3次）
-- AI分析失败自动重试（最多3次）
-- 多次失败后标记为"跳过-多次失败"
+### 8.3 存储管理
+- 自动清理30天前的标书/报告文件，释放磁盘空间
+- 磁盘使用率实时监控，阈值告警（80%）
 
-### 2. 服务类项目过滤
-- 自动识别服务类项目（如图书编辑、咨询服务等）
-- 服务类项目自动删除，不参与分析
+### 8.4 日志体系
+- 分级日志：主日志（tender_system.log）+ 自动运行日志（按时间戳命名）
+- 日志轮转：100MB自动切割，保留7天历史日志
 
-### 3. 客观分判定
-- 自动区分客观分和主观分
-- 价格相关评分项归类为主观分
-- 计算客观分可得分和得分率
-
-### 4. 存储管理
-- 自动清理旧文件（默认保留30天）
-- 磁盘使用率监控
-- 支持按项目状态清理
-
-## 依赖安装
-
+## 九、环境部署
+### 9.1 依赖安装
 ```bash
 pip install -r requirements.txt
 ```
 
-**特殊依赖**：
-- **Tesseract OCR**: 用于PDF OCR识别
-  - 安装路径需配置在 `config.py` 的 `PARSE_CONFIG["tesseract_path"]`
-- **Poppler**: 用于PDF处理
-  - 安装路径需配置在 `config.py` 的 `PARSE_CONFIG["poppler_path"]`
-- **Microsoft Word**: 用于DOC文件解析（可选，也可使用LibreOffice）
+### 9.2 特殊依赖配置
+| 依赖名称           | 用途        | 配置路径                                       |
+|----------------|-----------|--------------------------------------------|
+| Tesseract OCR  | PDF OCR识别 | config.py → PARSE_CONFIG["tesseract_path"] |
+| Poppler        | PDF处理辅助   | config.py → PARSE_CONFIG["poppler_path"]   |
+| Microsoft Word | DOC文件解析   | 需安装完整版，建议管理员权限运行                           |
+| Ollama         | AI模型服务    | 启动命令：ollama serve（端口11434）                 |
 
-## 日志系统
+## 十、常见问题排查
+| 问题现象          | 排查方案                                                       |
+|---------------|------------------------------------------------------------|
+| Word COM组件不可用 | 1. 确认安装完整版Word；2. 管理员身份运行程序；3. 切换LibreOffice方案             |
+| Ollama连接失败    | 1. 检查ollama serve是否启动；2. 端口11434是否被占用；3. 防火墙放行端口           |
+| 文件解析超时        | 1. 调整file_parser.py中parse_timeout_seconds；2. 拆分超大文件（>50MB） |
+| SQLite数据库锁定   | 1. 避免并发写入；2. 等待30s后重试；3. 检查数据库连接是否正常关闭                     |
 
-- 主日志：`logs/tender_system.log`
-- 自动运行日志：`logs/auto_run_YYYYMMDD_HHMMSS.log`
-- 日志轮转：100MB自动轮转
-- 日志保留：7天
+## 十一、开发扩展指南
+### 11.1 新增爬虫源
+1. 在`spider/`目录创建新爬虫类，实现`run()`核心方法
+2. 在`tender_spider.py`的`run_all_spiders()`中注册新爬虫
+3. 配置爬取规则、反爬策略，接入统一去重逻辑
 
-## 常见问题
+### 11.2 新增B类规则
+- 方式1：Web界面「资质管理 → B类规则库」可视化添加
+- 方式2：在config.py的`B_RULE_CONFIG["default_rules"]`中添加规则配置
 
-### 1. Word COM组件不可用
-- 确保已安装Microsoft Word（完整版）
-- 以管理员身份运行程序
-- 或安装LibreOffice作为备用方案
+### 11.3 修改AI提示词
+1. 编辑`prompts/`目录下对应txt文件
+2. 重启Streamlit应用，提示词自动生效
 
-### 2. Ollama服务连接失败
-- 确保Ollama服务已启动：`ollama serve`
-- 检查端口11434是否被占用
-- 检查防火墙设置
+## 十二、版本与维护信息
+| 项⽬          | 详情            |
+|-------------|---------------|
+| Python版本    | 3.12+         |
+| Streamlit版本 | 1.51.0        |
+| 数据库         | SQLite（无版本依赖） |
+| 最后更新        | 2025-01-02    |
+| 维护者         | Johnjincaaa   |
 
-### 3. 文件解析超时
-- 大文件（>50MB）可能需要较长时间
-- 可在 `file_parser.py` 中调整 `parse_timeout_seconds`
-
-### 4. 数据库锁定
-- SQLite支持多线程，但建议避免并发写入
-- 如遇锁定，等待片刻后重试
-
-## 开发说明
-
-### 添加新的爬虫源
-1. 在 `spider/` 目录创建新的爬虫类
-2. 实现 `run()` 方法
-3. 在 `spider/tender_spider.py` 的 `run_all_spiders()` 中注册
-
-### 添加新的B类规则
-1. 在Web界面"资质管理" → "B类规则库"中添加
-2. 或在 `config.py` 的 `B_RULE_CONFIG["default_rules"]` 中添加
-
-### 修改AI提示词
-- 编辑 `prompts/` 目录下的对应文件
-- 修改后重启应用生效
-
-## 版本信息
-
-- **Python版本**: 3.x
-- **Streamlit版本**: 1.51.0
-- **数据库**: SQLite
-- **最后更新**: 2025-01-02
-
-## 注意事项
-
-1. **数据备份**：定期备份 `tender_system.db` 数据库文件
-2. **存储空间**：定期清理旧文件，避免磁盘空间不足
-3. **AI模型**：确保Ollama服务正常运行，模型已下载
-4. **网络环境**：爬虫需要稳定的网络连接
-5. **Windows环境**：部分功能（如Word COM）仅支持Windows系统
+## 十三、注意事项
+1. 📌 **数据安全**：定期备份`tender_system.db`数据库，避免数据丢失
+2. 📌 **存储管理**：建议每周手动核查磁盘空间，清理非必要文件
+3. 📌 **AI服务**：确保Ollama服务常驻运行，核心模型已提前下载
+4. 📌 **网络环境**：爬虫依赖稳定网络，建议配置代理避免IP封禁
+5. 📌 **系统兼容**：Word COM组件仅支持Windows，Linux需切换LibreOffice方案
 
 ---
-
-**项目立项兼维护者**: Johnjincaaa 
-## 未经允许禁止商用
-
+<div >
+    <strong>© 2025 Johnjincaaa | 未经允许禁止商用</strong>
+</div>
