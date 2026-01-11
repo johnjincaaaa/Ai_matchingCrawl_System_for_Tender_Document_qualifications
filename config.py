@@ -49,7 +49,7 @@ AI_CONFIG = {
     "provider": "ollama",  # 只保留Ollama配置
     "ollama": {
         # 默认使用云模型
-        "default_model": "cloud",  # 可选值: "local" 或 "cloud"
+        "default_model": "cloud",  # 可选值: "local" 或 "cloud "
         
         # 本地模型配置
         "local_model": {
