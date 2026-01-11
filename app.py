@@ -3169,6 +3169,9 @@ def _render_project_status(show_refresh=True):
     from utils.db import get_db, ProjectStatus, update_project
     from datetime import timedelta
     
+    # 定义状态顺序（在整个函数中可用）
+    status_order = ["待处理", "已下载", "已解析", "已比对", "异常", "未知"]
+    
     # 当日项目状态
     st.markdown("---")
     st.subheader("📊 当日项目状态")
@@ -3198,7 +3201,6 @@ def _render_project_status(show_refresh=True):
             st.plotly_chart(fig, width='stretch')
         
         st.markdown("### 📊 状态统计")
-        status_order = ["待处理", "已下载", "已解析", "已比对", "异常", "未知"]
         sorted_items = sorted(status_data.items(), key=lambda x: status_order.index(x[0]) if x[0] in status_order else len(status_order))
         
         for row_start in range(0, len(sorted_items), 6):
