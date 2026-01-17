@@ -73,7 +73,7 @@ for logger_name in ['tornado', 'tornado.websocket', 'tornado.iostream', 'tornado
 root_logger = logging.getLogger()
 root_logger.addFilter(WebSocketErrorFilter())
 
-# ====================== 抑制asyncio未捕获的异常警告 ======================
+# ====================== 抑制asyncio未捕获的异常警告 =====================
 # "Task exception was never retrieved" 这些错误是asyncio框架产生的未捕获异常
 # 它们直接输出到stderr，需要通过asyncio的异常处理器来抑制
 try:
