@@ -134,7 +134,7 @@ class ReportGenerator:
             log.debug(f"从comparison_result中提取客观分可得分失败：{str(e)}")
             return None
 
-    def _get_project_data(self, start_date=None, end_date=None, regions=None, procurement_types=None):
+    def _get_project_data(self, start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None):
         """获取项目数据（支持筛选）
         
         Args:
@@ -142,6 +142,7 @@ class ReportGenerator:
             end_date: 结束日期（datetime或date对象）
             regions: 城市列表（如["杭州市", "宁波市"]），会按提取的城市进行筛选，None表示全选
             procurement_types: 采购类型列表（如["政府采购", "国企采购"]），None表示全选
+            platform_code: 平台代码（如"zhejiang"、"hangzhou"），None表示全选
         """
         query = self.db.query(TenderProject)
         
@@ -175,6 +176,23 @@ class ReportGenerator:
             # 采购类型筛选
             if procurement_types and len(procurement_types) > 0:
                 if procurement_type not in procurement_types:
+                    continue
+            
+            # 平台筛选
+            if platform_code:
+                # 从site_name中提取平台代码（避免循环导入）
+                site_name = proj.site_name or ""
+                project_platform = None
+                platform_map = {
+                    "浙江省政府采购网": "zhejiang",
+                    "杭州市公共资源交易网": "hangzhou",
+                }
+                for platform_name, code in platform_map.items():
+                    if platform_name in site_name:
+                        project_platform = code
+                        break
+                
+                if project_platform != platform_code:
                     continue
             
             final_decision = proj.final_decision if hasattr(proj, 'final_decision') and proj.final_decision else "未判定"
@@ -295,7 +313,7 @@ class ReportGenerator:
 
         return wb
 
-    def generate_report(self, start_date=None, end_date=None, regions=None, procurement_types=None, report_filename=None):
+    def generate_report(self, start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None, report_filename=None):
         """生成Excel报告（支持筛选）
         
         Args:
@@ -303,6 +321,7 @@ class ReportGenerator:
             end_date: 结束日期（datetime或date对象），None表示不限制
             regions: 区域列表（如["杭州市", "宁波市"]），None或空列表表示全选
             procurement_types: 采购类型列表（如["政府采购", "国企采购"]），None或空列表表示全选
+            platform_code: 平台代码（如"zhejiang"、"hangzhou"），None表示全选
             report_filename: 报告文件名，None表示使用默认名称
         """
         try:
@@ -313,13 +332,16 @@ class ReportGenerator:
                 log.info(f"筛选区域：{regions}")
             if procurement_types and len(procurement_types) > 0:
                 log.info(f"筛选采购类型：{procurement_types}")
+            if platform_code:
+                log.info(f"筛选平台：{platform_code}")
             
             # 1. 获取数据（应用筛选条件）
             all_data = self._get_project_data(
                 start_date=start_date,
                 end_date=end_date,
                 regions=regions,
-                procurement_types=procurement_types
+                procurement_types=procurement_types,
+                platform_code=platform_code
             )
             
             if len(all_data) == 0:

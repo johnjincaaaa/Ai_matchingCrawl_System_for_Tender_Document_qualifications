@@ -230,16 +230,37 @@ try:
     from utils.task_scheduler import WindowsTaskScheduler
     from utils.db import get_db, TenderProject, ProjectStatus, update_project, save_project, CompanyQualification, get_company_qualifications, add_company_qualification, update_company_qualification, delete_company_qualification, ClassACertificate, get_class_a_certificates, add_class_a_certificate, update_class_a_certificate, delete_class_a_certificate, ClassBRule, get_class_b_rules, add_class_b_rule, update_class_b_rule, delete_class_b_rule, extract
     from spider.tender_spider import ZheJiangTenderSpider
+    from spider import SpiderManager
     from utils.log import log
+    
+    # 确保导入所有平台爬虫（触发注册）
+    try:
+        from spider.platforms.hangzhou import HangZhouTenderSpider
+    except ImportError as e:
+        log.warning(f"导入杭州市爬虫失败（不影响系统运行）: {str(e)}")
 
     # 初始化组件
-    file_parser = FileParser()
+    try:
+        log.info("正在初始化FileParser...")
+        file_parser = FileParser()
+        log.info("FileParser初始化成功")
+    except Exception as e:
+        log.error(f"FileParser初始化失败: {str(e)}", exc_info=True)
+        raise
     
     # AIAnalyzer改为懒加载，避免模块级别阻塞（在真正需要时才初始化）
     # 不再在模块级别初始化，改为在需要时通过get_ai_analyzer()函数获取
     ai_analyzer = None  # 占位符，实际使用时通过get_ai_analyzer()获取
     
-    report_generator = ReportGenerator()
+    try:
+        log.info("正在初始化ReportGenerator...")
+        report_generator = ReportGenerator()
+        log.info("ReportGenerator初始化成功")
+    except Exception as e:
+        log.error(f"ReportGenerator初始化失败: {str(e)}", exc_info=True)
+        raise
+    
+    log.info("系统初始化完成，所有组件已就绪")
     SYSTEM_READY = True
 except Exception as e:
     st.error(f"❌ 系统初始化失败：{str(e)}")
@@ -1047,6 +1068,53 @@ def _dict_to_project(project_dict):
     return SimpleNamespace(**project_dict)
 
 
+# ====================== 平台筛选辅助函数 ======================
+def get_available_platforms():
+    """获取所有可用的爬虫平台列表"""
+    try:
+        # 确保导入所有平台爬虫（触发注册）
+        try:
+            from spider.platforms.hangzhou import HangZhouTenderSpider
+        except ImportError:
+            pass  # 如果导入失败，继续使用已注册的平台
+        
+        platforms = SpiderManager.list_all_spider_info()
+        return {info["code"]: info["name"] for info in platforms}
+    except Exception as e:
+        log.error(f"获取平台列表失败: {str(e)}")
+        return {"zhejiang": "浙江省政府采购网"}
+
+def extract_platform_code(site_name):
+    """从site_name中提取平台代码"""
+    if not site_name:
+        return None
+    
+    # 平台名称映射
+    platform_map = {
+        "浙江省政府采购网": "zhejiang",
+        "杭州市公共资源交易网": "hangzhou",
+    }
+    
+    for platform_name, code in platform_map.items():
+        if platform_name in site_name:
+            return code
+    
+    return None
+
+def filter_projects_by_platform(projects, platform_code):
+    """根据平台代码筛选项目"""
+    if platform_code == "全部":
+        return projects
+    
+    filtered = []
+    for project in projects:
+        site_name = project.site_name if hasattr(project, 'site_name') else getattr(project, 'site_name', '')
+        project_platform = extract_platform_code(site_name)
+        if project_platform == platform_code:
+            filtered.append(project)
+    
+    return filtered
+
 @st.cache_data(ttl=300, max_entries=20)  # 缓存5分钟，减少数据库查询
 def get_all_projects():
     """获取所有项目数据"""
@@ -1058,8 +1126,14 @@ def get_all_projects():
 
 
 @st.cache_data(ttl=600, max_entries=100)  # 缓存10分钟，减少数据库查询频率（从5分钟增加到10分钟）
-def get_completed_projects(region="全部", month_day="全部"):
-    """获取已对比（COMPARED）状态的项目"""
+def get_completed_projects(region="全部", month_day="全部", platform_code=None):
+    """获取已对比（COMPARED）状态的项目
+    
+    Args:
+        region: 区域筛选（"全部"或具体区域名称）
+        month_day: 日期筛选（"全部"或"MM-DD"格式）
+        platform_code: 平台代码筛选（None表示全部，或具体平台代码如"zhejiang"）
+    """
     from sqlalchemy import extract  # 在函数内部导入，确保在缓存环境中可用
     from utils.log import log
     from sqlalchemy import or_
@@ -1125,6 +1199,13 @@ def get_completed_projects(region="全部", month_day="全部"):
         # 转换为可序列化的格式（优化：只加载需要的字段，不加载大字段）
         result = []
         for p in projects:
+            # 平台筛选（在数据库查询后应用，因为site_name可能包含多个字段）
+            if platform_code:
+                site_name = p.site_name if hasattr(p, 'site_name') else getattr(p, 'site_name', '')
+                project_platform = extract_platform_code(site_name)
+                if project_platform != platform_code:
+                    continue
+            
             # 创建轻量级项目对象，不加载evaluation_content等大字段
             project_dict = {
                 'id': p.id,
@@ -2948,6 +3029,7 @@ def _start_background_task(task_type, **kwargs):
                 from auto_run_full_process import run_full_process_cli
                 daily_limit = kwargs.get("daily_limit", SPIDER_CONFIG['daily_limit'])
                 days_before = kwargs.get("days_before", 7)
+                enabled_platforms = kwargs.get("enabled_platforms", None)
                 
                 # 检查是否被停止
                 while not st.session_state.get(config["stopped_key"], False):
@@ -2960,7 +3042,7 @@ def _start_background_task(task_type, **kwargs):
                         break
                     
                     try:
-                        result = run_full_process_cli(daily_limit=daily_limit, days_before=days_before, model_type=None)
+                        result = run_full_process_cli(daily_limit=daily_limit, days_before=days_before, model_type=None, enabled_platforms=enabled_platforms)
                         break  # 执行完成，退出循环
                     except KeyboardInterrupt:
                         log.warning("全流程执行被用户中断")
@@ -3252,7 +3334,7 @@ def _render_project_status(show_refresh=True):
     st.markdown("---")
     st.subheader("📋 全部项目状态详情")
     
-    col1, col2, col3 = st.columns([2, 2, 1])
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
     with col1:
         all_statuses = ["全部"] + [s.value for s in ProjectStatus] + ["未知"]
         selected_status = st.selectbox("筛选状态", all_statuses, index=0, key="all_status_filter")
@@ -3260,6 +3342,11 @@ def _render_project_status(show_refresh=True):
         date_filter = st.selectbox("日期范围", ["全部", "最近7天", "最近30天", "最近90天", "自定义"],
                                   key="all_date_filter")
     with col3:
+        # 平台筛选
+        available_platforms = get_available_platforms()
+        platform_options = ["全部"] + list(available_platforms.values())
+        selected_platform_name = st.selectbox("筛选平台", platform_options, index=0, key="all_platform_filter")
+    with col4:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 刷新全部", key="refresh_all"):
             get_all_projects.clear()
@@ -3280,6 +3367,11 @@ def _render_project_status(show_refresh=True):
     
     # 应用筛选
     filtered = []
+    # 获取平台代码
+    selected_platform_code = None
+    if selected_platform_name != "全部":
+        selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
+    
     for p in all_projects:
         p_status = p.status if p.status else "未知"
         if selected_status != "全部" and (selected_status == "未知" and p_status != "未知" or 
@@ -3292,6 +3384,11 @@ def _render_project_status(show_refresh=True):
                 if (start_date and p_date < start_date) or (end_date and p_date > end_date):
                     continue
             elif date_filter != "全部":
+                continue
+        # 平台筛选
+        if selected_platform_code:
+            project_platform = extract_platform_code(p.site_name if hasattr(p, 'site_name') else getattr(p, 'site_name', ''))
+            if project_platform != selected_platform_code:
                 continue
         filtered.append(p)
     
@@ -3685,6 +3782,21 @@ def render_process_execution():
     
     # 爬取设置（仅全流程和标书爬虫需要）
     if selected_process in ["全流程", "标书爬虫"]:
+        # 平台选择
+        available_platforms = get_available_platforms()
+        platform_options = ["全部"] + list(available_platforms.values())
+        selected_platform_name = st.selectbox(
+            "选择爬取平台",
+            options=platform_options,
+            index=0,
+            key="selected_platform_name"
+        )
+        
+        # 将平台名称转换为平台代码
+        selected_platform_code = None
+        if selected_platform_name != "全部":
+            selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
+        
         col1, col2 = st.columns(2)
         with col1:
             crawl_quantity = st.number_input("爬取数量", min_value=1, max_value=200, 
@@ -3701,11 +3813,13 @@ def render_process_execution():
         st.session_state["hide_sidebar"] = True
         
         if selected_process == "全流程":
-            _start_background_task("全流程", daily_limit=crawl_quantity, days_before=crawl_days_before)
+            enabled_platforms = [selected_platform_code] if selected_platform_code else None
+            _start_background_task("全流程", daily_limit=crawl_quantity, days_before=crawl_days_before, enabled_platforms=enabled_platforms)
             st.success("✅ 全流程已启动，正在后台执行中...")
         elif selected_process == "标书爬虫":
             st.session_state['spider_running'] = False
             st.session_state['spider_paused'] = False
+            st.session_state['selected_platform_code'] = selected_platform_code  # 保存平台选择
             run_spider_with_progress()
         elif selected_process == "文件解析":
             _start_background_task("文件解析")
@@ -3788,17 +3902,56 @@ def run_spider_with_progress():
         # 传递用户设置的总配额和时间范围给爬虫
         spider_total = st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])
         days_before = st.session_state.get("crawl_days_before", 7)  # 默认7天
-        spider = ZheJiangTenderSpider(daily_limit=spider_total, days_before=days_before)
+        selected_platform_code = st.session_state.get('selected_platform_code', None)
+        
+        # 如果选择了特定平台，使用SpiderManager创建爬虫
+        if selected_platform_code:
+            from spider import SpiderManager
+            try:
+                spider = SpiderManager.create_spider(selected_platform_code, daily_limit=spider_total, days_before=days_before)
+            except Exception as e:
+                st.error(f"创建爬虫失败: {str(e)}")
+                return
+        else:
+            # 使用原有的ZheJiangTenderSpider（向后兼容）
+            spider = ZheJiangTenderSpider(daily_limit=spider_total, days_before=days_before)
         
         # 创建session对象
         import requests
         session = requests.Session()
-        session.headers.update(spider.headers)
-        session.cookies.update(spider.cookies)
+        # 检查spider是否有headers和cookies属性（不同平台可能不同）
+        if hasattr(spider, 'headers'):
+            session.headers.update(spider.headers)
+        if hasattr(spider, 'cookies'):
+            session.cookies.update(spider.cookies)
         
         # 修改spider的run方法以支持中断
         total_count = 0
         projects = []
+        
+        # 如果选择了非浙江省平台，直接调用run方法（简化处理）
+        if selected_platform_code and selected_platform_code != "zhejiang":
+            # 非浙江省平台，直接运行（进度显示简化）
+            try:
+                projects = spider.run()
+                total_count = len(projects)
+                safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
+                progress_bar.progress(1.0)
+            except Exception as e:
+                safe_streamlit_update(status_text.error, f"❌ 爬取失败: {str(e)}")
+            return
+        
+        # 浙江省平台使用原有的详细进度显示逻辑
+        if not hasattr(spider, 'category_codes'):
+            # 如果spider没有category_codes属性，直接运行
+            try:
+                projects = spider.run()
+                total_count = len(projects)
+                safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
+                progress_bar.progress(1.0)
+            except Exception as e:
+                safe_streamlit_update(status_text.error, f"❌ 爬取失败: {str(e)}")
+            return
         
         for category in spider.category_codes:
             # 检查总配额是否已满
@@ -4617,7 +4770,7 @@ def render_result_visualization():
     region_options = predefined_regions
     
     # 添加筛选控件
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         selected_region = st.selectbox(
             "区域筛选",
@@ -4626,6 +4779,12 @@ def render_result_visualization():
         )
     
     with col2:
+        # 平台筛选
+        available_platforms = get_available_platforms()
+        platform_options = ["全部"] + list(available_platforms.values())
+        selected_platform_name = st.selectbox("平台筛选", platform_options, index=0, key="visualization_platform_filter")
+    
+    with col3:
         # 添加日期（月-日）筛选器（优化：使用缓存，避免每次查询数据库）
         @st.cache_data(ttl=1800, max_entries=1)  # 缓存30分钟，只缓存一个版本
         def get_available_dates():
@@ -4677,7 +4836,11 @@ def render_result_visualization():
     )
     
     # 获取筛选后的项目
-    completed_projects = get_completed_projects(selected_region, selected_month_day)
+    selected_platform_code = None
+    if selected_platform_name != "全部":
+        selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
+    
+    completed_projects = get_completed_projects(selected_region, selected_month_day, selected_platform_code)
     
     # 应用项目名搜索过滤（优化：避免None值错误）
     original_count = len(completed_projects)
@@ -5245,7 +5408,7 @@ def render_report_export():
     # 筛选条件配置
     st.subheader("📋 筛选条件")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         # 时间范围选择
         st.markdown("**时间范围**")
@@ -5269,6 +5432,18 @@ def render_report_export():
         else:
             selected_procurement_types = []
             st.info("暂无采购类型数据")
+    
+    with col3:
+        # 平台筛选
+        st.markdown("**平台筛选**")
+        available_platforms = get_available_platforms()
+        platform_options = ["全部"] + list(available_platforms.values())
+        selected_platform_name = st.selectbox(
+            "选择平台（不选表示全选）",
+            options=platform_options,
+            index=0,
+            key="report_platform_filter"
+        )
     
     # 城市选择
     st.markdown("**城市筛选**")
@@ -5301,12 +5476,17 @@ def render_report_export():
                 # 处理筛选条件（将城市筛选转换为区域筛选参数，报告生成器内部会处理城市匹配）
                 cities_filter = selected_cities if selected_cities else None
                 procurement_types_filter = selected_procurement_types if selected_procurement_types else None
+                # 平台筛选
+                selected_platform_code = None
+                if selected_platform_name != "全部":
+                    selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
                 
                 report_path = generate_report(
                     start_date=start_dt,
                     end_date=end_dt,
                     regions=cities_filter,  # 传递城市列表作为regions参数，报告生成器内部会按城市筛选
-                    procurement_types=procurement_types_filter
+                    procurement_types=procurement_types_filter,
+                    platform_code=selected_platform_code
                 )
 
                 # 生成下载链接
@@ -5325,7 +5505,8 @@ def render_report_export():
                     start_date=start_dt,
                     end_date=end_dt,
                     regions=cities_filter,  # 传递城市列表作为regions参数
-                    procurement_types=procurement_types_filter
+                    procurement_types=procurement_types_filter,
+                    platform_code=selected_platform_code
                 )
 
             except Exception as e:
@@ -5337,25 +5518,27 @@ def render_report_export():
                 st.markdown("- 尝试调整筛选条件后重新生成报告")
 
 
-def generate_report(start_date=None, end_date=None, regions=None, procurement_types=None):
+def generate_report(start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None):
     """生成报告"""
     report_gen = ReportGenerator()
     return report_gen.generate_report(
         start_date=start_date,
         end_date=end_date,
         regions=regions,
-        procurement_types=procurement_types
+        procurement_types=procurement_types,
+        platform_code=platform_code
     )
 
 
-def preview_report(start_date=None, end_date=None, regions=None, procurement_types=None):
+def preview_report(start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None):
     """预览报告内容"""
     report_gen = ReportGenerator()
     data = report_gen._get_project_data(
         start_date=start_date,
         end_date=end_date,
         regions=regions,
-        procurement_types=procurement_types
+        procurement_types=procurement_types,
+        platform_code=platform_code
     )
     if len(data) > 0:
         st.dataframe(data.head(20), width='stretch')

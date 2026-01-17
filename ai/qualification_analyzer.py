@@ -888,6 +888,48 @@ class AIAnalyzer:
             # 判断失败时默认返回False（非服务类），避免误删项目
             return False, f"判断异常：{str(e)[:100]}"
     
+    def has_qualification_keywords(self, evaluation_content):
+        """检查项目公告内容是否包含资质相关关键词
+        
+        Args:
+            evaluation_content: 项目解析内容（公告内容）
+            
+        Returns:
+            tuple: (has_keywords: bool, matched_keywords: list) 
+                   如果包含资质关键词返回True和匹配到的关键词列表，否则返回False和空列表
+        """
+        if not evaluation_content:
+            return False, []
+        
+        # 资质相关关键词列表
+        qualification_keywords = [
+            "资质",
+            "许可证",
+            "认证",
+            "备案",
+            "执业资格",
+            "许可",
+            "等级证书"
+        ]
+        
+        # 转换为字符串并转为小写以便匹配
+        content = str(evaluation_content).lower()
+        matched_keywords = []
+        
+        # 检查每个关键词
+        for keyword in qualification_keywords:
+            if keyword in content:
+                matched_keywords.append(keyword)
+        
+        has_keywords = len(matched_keywords) > 0
+        
+        if has_keywords:
+            log.info(f"项目包含资质关键词：{matched_keywords}")
+        else:
+            log.debug("项目不包含资质关键词")
+        
+        return has_keywords, matched_keywords
+    
     def extract_requirements_fulltext(self, evaluation_content):
         """提取项目资质要求（使用全文本，不压缩）"""
         try:
