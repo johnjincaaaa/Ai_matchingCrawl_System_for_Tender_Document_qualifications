@@ -34,15 +34,28 @@ API_LOGIN_URL = f"{API_BASE_URL}/api/Account/Login"
 LOGIN_ACCOUNT = "13376851006"
 LOGIN_PASSWORD = "Wzy123888!"
 
-# 获取login.js文件路径（相对于当前config.py文件）
-# config.py 位于: spider/platforms/ningbo/config.py
-# login.js 位于: spider/crawl_tests/宁波市/login.js
+# 获取login.js文件路径（生产代码位置）
+# login.js 位于: spider/platforms/ningbo/js/login.js
+# 注意：不再使用 crawl_tests 目录中的文件，所有必需文件都在生产代码位置
 _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 # _CONFIG_DIR = spider/platforms/ningbo
-# 向上两级到 spider 目录: os.path.dirname(os.path.dirname(_CONFIG_DIR)) = spider
-_BASE_SPIDER_DIR = os.path.dirname(os.path.dirname(_CONFIG_DIR))  # 到 spider 目录
-LOGIN_JS_PATH = os.path.join(_BASE_SPIDER_DIR, "crawl_tests", "宁波市", "login.js")
-LOGIN_JS_PATH = os.path.abspath(LOGIN_JS_PATH)  # 转换为绝对路径
+
+# 生产代码位置的 login.js
+LOGIN_JS_PATH = os.path.join(_CONFIG_DIR, "js", "login.js")
+LOGIN_JS_PATH = os.path.abspath(LOGIN_JS_PATH)
+
+# 验证文件是否存在
+if not os.path.exists(LOGIN_JS_PATH):
+    log.error(
+        f"❌ login.js 文件不存在于生产代码位置: {LOGIN_JS_PATH}\n"
+        f"请确保以下文件存在于正确位置：\n"
+        f"  - spider/platforms/ningbo/js/login.js\n"
+        f"  - spider/platforms/ningbo/js/package.json\n"
+        f"  - spider/platforms/ningbo/js/node_modules/（已安装依赖）\n"
+        f"项目不再使用 crawl_tests 目录中的文件。"
+    )
+else:
+    log.debug(f"✓ 使用生产代码位置的 login.js: {LOGIN_JS_PATH}")
 
 
 def get_access_token() -> str:
