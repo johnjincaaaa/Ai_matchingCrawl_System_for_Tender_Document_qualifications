@@ -238,6 +238,11 @@ try:
         from spider.platforms.hangzhou import HangZhouTenderSpider
     except ImportError as e:
         log.warning(f"导入杭州市爬虫失败（不影响系统运行）: {str(e)}")
+    
+    try:
+        from spider.platforms.jiaxing import JiaXingTenderSpider
+    except ImportError as e:
+        log.warning(f"导入嘉兴市爬虫失败（不影响系统运行）: {str(e)}")
 
     # 初始化组件
     try:
@@ -1078,6 +1083,11 @@ def get_available_platforms():
         except ImportError:
             pass  # 如果导入失败，继续使用已注册的平台
         
+        try:
+            from spider.platforms.jiaxing import JiaXingTenderSpider
+        except ImportError:
+            pass  # 如果导入失败，继续使用已注册的平台
+        
         platforms = SpiderManager.list_all_spider_info()
         return {info["code"]: info["name"] for info in platforms}
     except Exception as e:
@@ -1093,6 +1103,7 @@ def extract_platform_code(site_name):
     platform_map = {
         "浙江省政府采购网": "zhejiang",
         "杭州市公共资源交易网": "hangzhou",
+        "嘉兴禾采联综合采购服务平台": "jiaxing",
     }
     
     for platform_name, code in platform_map.items():
