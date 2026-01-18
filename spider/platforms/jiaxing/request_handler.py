@@ -152,7 +152,8 @@ def get_doc_detail(session: requests.Session, detail_url: str,
                 log.debug(f"成功提取attachGuid: {attach_guid}")
                 return attach_guid
             else:
-                log.warning(f"未找到attachGuid: {detail_url}")
+                # 静默处理：找不到attachGuid的项目直接跳过，不显示警告
+                log.debug(f"未找到attachGuid: {detail_url}，跳过该项目")
                 if attempt < retry_times:
                     time.sleep(2 * (attempt + 1))
                     continue

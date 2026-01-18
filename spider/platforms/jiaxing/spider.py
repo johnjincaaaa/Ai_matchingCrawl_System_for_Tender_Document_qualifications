@@ -133,16 +133,22 @@ class JiaXingTenderSpider(BaseSpider):
                         log.debug(f"项目已存在，跳过: {project_id}")
                         continue
                     
-                    # 添加到已处理集合
+                    # 先添加到已处理集合，避免重复处理（无论成功与否）
                     processed_project_ids.add(project_id)
                     
                     # 获取详情并下载文件
                     file_path, file_format = self._download_document(
                         session, project_id, project_data
                     )
-                    if file_path:
-                        project_data["file_path"] = file_path
-                        project_data["file_format"] = file_format
+                    
+                    # 如果没有文件（找不到attachGuid或下载失败），直接跳过，不保存也不计入配额
+                    if not file_path:
+                        log.debug(f"项目 {project_id} 无法获取文件，跳过保存（不计入配额）")
+                        continue
+                    
+                    # 只有成功下载文件的项目才保存到数据库
+                    project_data["file_path"] = file_path
+                    project_data["file_format"] = file_format
                     
                     # 保存项目
                     saved_project = save_project(self.db, project_data)
@@ -273,7 +279,8 @@ class JiaXingTenderSpider(BaseSpider):
             )
             
             if not attach_guid:
-                log.warning(f"项目 {project_id} 无法获取attachGuid，跳过下载")
+                # 静默处理：找不到attachGuid的项目直接跳过，不显示警告
+                log.debug(f"项目 {project_id} 无法获取attachGuid，跳过下载")
                 return None, None
             
             # 构建文件保存路径

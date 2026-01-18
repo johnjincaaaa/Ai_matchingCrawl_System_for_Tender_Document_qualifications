@@ -1,0 +1,33 @@
+{
+    "data": {
+        "total": 1,
+        "rows": [
+            {
+                "FileId": "20260116163843851",
+                "FlowId": null,
+                "FileBatchId": "1768581523851",
+                "FileName": "相关材料.doc",
+                "FileType": ".doc",
+                "TypeId": "020101",
+                "PrjId": "M3302005195029567001",
+                "SectId": null,
+                "FileSize": 2375168.0,
+                "UploadTime": "2026-01-16 16:38:43",
+                "UserId": "202211101116399516",
+                "UserName": "宁波海欣资产经营有限公司",
+                "Remark": "文件上传",
+                "isDel": "0",
+                "SyncFlag": null,
+                "isBS": "0",
+                "FileFlag": 1,
+                "Filedir": 2026,
+                "isPub": "0",
+                "Source": null,
+                "FileUrl": "/MyUpfiles/2026/01/16/202211101116399516_相关材料_20260116163843851.doc",
+                "FileData": null
+            }
+        ]
+    },
+    "msg": "获取成功",
+    "code": 1
+}

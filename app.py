@@ -243,6 +243,11 @@ try:
         from spider.platforms.jiaxing import JiaXingTenderSpider
     except ImportError as e:
         log.warning(f"导入嘉兴市爬虫失败（不影响系统运行）: {str(e)}")
+    
+    try:
+        from spider.platforms.ningbo import NingBoTenderSpider
+    except ImportError as e:
+        log.warning(f"导入宁波市爬虫失败（不影响系统运行）: {str(e)}")
 
     # 初始化组件
     try:
@@ -383,14 +388,33 @@ def get_ai_analyzer():
 # 注意：以下session_state循环处理已移至main()函数中，避免模块级别阻塞
 def process_session_state_actions():
     """处理session_state中的异步操作（从模块级别移到这里）"""
-    ai_analyzer = get_ai_analyzer()  # 懒加载，只在需要时才初始化
+    try:
+        ai_analyzer = get_ai_analyzer()  # 懒加载，只在需要时才初始化
+    except Exception as e:
+        log.warning(f"获取AI分析器失败（可忽略）：{str(e)}")
+        return  # 如果无法获取AI分析器，直接返回，不处理相关操作
     
     # 处理项目全文本重新AI分析（不压缩模式）
     for key in list(st.session_state.keys()):
         if key.startswith('fulltext_reanalyze_project_'):
-            project_id = int(key.split('_')[-1])
-            db = next(get_db())
-            project = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+            db = None
+            try:
+                project_id = int(key.split('_')[-1])
+                db = next(get_db())
+            except (ValueError, StopIteration) as e:
+                log.warning(f"解析项目ID失败或数据库连接失败（可忽略）：{str(e)}")
+                continue
+            
+            try:
+                project = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+            except Exception as e:
+                log.warning(f"查询项目失败（可忽略）：{str(e)}")
+                if db:
+                    try:
+                        db.close()
+                    except:
+                        pass
+                continue
             
             if project:
                 try:
@@ -458,9 +482,22 @@ def process_session_state_actions():
     # 处理项目重新AI分析（压缩模式，原有功能）
     for key in list(st.session_state.keys()):
         if key.startswith('reanalyze_project_') and not key.startswith('fulltext_reanalyze_project_'):
-            project_id = int(key.split('_')[-1])
-            db = next(get_db())
-            project = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+            try:
+                project_id = int(key.split('_')[-1])
+                db = next(get_db())
+            except (ValueError, StopIteration) as e:
+                log.warning(f"解析项目ID失败或数据库连接失败（可忽略）：{str(e)}")
+                continue
+            
+            try:
+                project = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+            except Exception as e:
+                log.warning(f"查询项目失败（可忽略）：{str(e)}")
+                try:
+                    db.close()
+                except:
+                    pass
+                continue
             
             if project:
                 try:
@@ -495,7 +532,18 @@ def process_session_state_actions():
                     if key in st.session_state:
                         del st.session_state[key]
                 finally:
-                    db.close()
+                    if db:
+                        try:
+                            db.close()
+                        except:
+                            pass
+            else:
+                # 如果项目不存在，也要关闭数据库连接
+                if db:
+                    try:
+                        db.close()
+                    except:
+                        pass
 
 
 @st.cache_data(ttl=300, max_entries=10)  # 缓存5分钟，减少数据库查询
@@ -709,7 +757,7 @@ def render_objective_score_analysis(objective_scores, key_suffix=""):
                             # 添加数据标签
                             fig.update_traces(texttemplate='%{y}', textposition='outside', textfont_size=10)
                         
-                        st.plotly_chart(fig, width='stretch', height=500)
+                        st.plotly_chart(fig, config={"displayModeBar": True}, use_container_width=True)
                     
                     # 总分计算（确保item是字典类型）
                     total_score = sum(item.get('score', 0) if isinstance(item, dict) else 0 for item in objective_data)
@@ -764,7 +812,7 @@ def render_subjective_score_analysis(subjective_scores, key_suffix=""):
                         )
                         # 添加数据标签
                         fig.update_traces(texttemplate='%{y}', textposition='outside', textfont_size=10)
-                        st.plotly_chart(fig, width='stretch', height=400)
+                        st.plotly_chart(fig, config={"displayModeBar": True}, use_container_width=True)
                 else:
                     st.text_area("主观分数据", subjective_scores, height=200, key=f"subjective_scores_raw_{key_suffix}_{id(subjective_scores)}")
             except json.JSONDecodeError:
@@ -1080,18 +1128,24 @@ def get_available_platforms():
         # 确保导入所有平台爬虫（触发注册）
         try:
             from spider.platforms.hangzhou import HangZhouTenderSpider
-        except ImportError:
-            pass  # 如果导入失败，继续使用已注册的平台
+        except Exception as e:
+            log.warning(f"导入杭州市爬虫失败: {str(e)}")
         
         try:
             from spider.platforms.jiaxing import JiaXingTenderSpider
-        except ImportError:
-            pass  # 如果导入失败，继续使用已注册的平台
+        except Exception as e:
+            log.warning(f"导入嘉兴市爬虫失败: {str(e)}")
+        
+        try:
+            from spider.platforms.ningbo import NingBoTenderSpider
+        except Exception as e:
+            log.warning(f"导入宁波市爬虫失败: {str(e)}", exc_info=True)
         
         platforms = SpiderManager.list_all_spider_info()
+        log.debug(f"已注册的爬虫平台: {[p['code'] for p in platforms]}")
         return {info["code"]: info["name"] for info in platforms}
     except Exception as e:
-        log.error(f"获取平台列表失败: {str(e)}")
+        log.error(f"获取平台列表失败: {str(e)}", exc_info=True)
         return {"zhejiang": "浙江省政府采购网"}
 
 def extract_platform_code(site_name):
@@ -1104,6 +1158,7 @@ def extract_platform_code(site_name):
         "浙江省政府采购网": "zhejiang",
         "杭州市公共资源交易网": "hangzhou",
         "嘉兴禾采联综合采购服务平台": "jiaxing",
+        "宁波市阳光采购服务平台": "ningbo",
     }
     
     for platform_name, code in platform_map.items():
@@ -1126,7 +1181,7 @@ def filter_projects_by_platform(projects, platform_code):
     
     return filtered
 
-@st.cache_data(ttl=300, max_entries=20)  # 缓存5分钟，减少数据库查询
+@st.cache_data(ttl=60, max_entries=20)  # 缓存1分钟，减少数据库查询，确保新项目能及时显示
 def get_all_projects():
     """获取所有项目数据"""
     db = next(get_db())
@@ -1513,7 +1568,12 @@ def render_sidebar():
     st.sidebar.subheader("📊 系统状态")
 
     if SYSTEM_READY:
-        today_stats = get_today_project_stats()
+        # 安全获取统计数据（添加异常处理，防止中断应用）
+        try:
+            today_stats = get_today_project_stats()
+        except Exception as e:
+            log.warning(f"获取今日统计失败（可忽略）：{str(e)}")
+            today_stats = {"total": 0, "completed": 0, "qualified": 0, "pass_rate": 0}
         
         # 显示存储空间信息
         try:
@@ -1529,7 +1589,8 @@ def render_sidebar():
                 storage_status = f"🟡 磁盘空间不足 ({usage_percent:.1f}%)"
             else:
                 storage_status = f"✅ 存储空间正常 ({usage_percent:.1f}%)"
-        except Exception:
+        except Exception as e:
+            log.debug(f"获取存储空间信息失败（可忽略）：{str(e)}")
             storage_status = "✅ 存储空间正常"
         
         with st.sidebar.container(border=True, height=200):
@@ -3271,11 +3332,17 @@ def _render_project_status(show_refresh=True):
     
     # 只在非任务运行时显示刷新按钮
     if show_refresh:
-        if st.button("🔄 刷新", key="refresh_today_status"):
-            get_all_projects.clear()
-            get_project_stats.clear()
-            get_today_project_stats.clear()
-            st.rerun()
+        col_refresh1, col_refresh2 = st.columns([1, 10])
+        with col_refresh1:
+            if st.button("🔄 刷新", key="refresh_today_status"):
+                get_all_projects.clear()
+                get_project_stats.clear()
+                get_today_project_stats.clear()
+                st.rerun()
+        with col_refresh2:
+            # 自动刷新提示：显示缓存状态
+            cache_info = "💡 提示：数据缓存60秒，新保存的项目可能需要刷新后才能显示"
+            st.caption(cache_info)
     
     today = datetime.today().date()
     all_projects = get_all_projects()
@@ -3291,7 +3358,7 @@ def _render_project_status(show_refresh=True):
         if status_data:
             fig = px.pie(values=list(status_data.values()), names=list(status_data.keys()),
                         title="当日项目状态分布", hole=0.3)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, config={"displayModeBar": True}, use_container_width=True)
         
         st.markdown("### 📊 状态统计")
         sorted_items = sorted(status_data.items(), key=lambda x: status_order.index(x[0]) if x[0] in status_order else len(status_order))
@@ -3820,31 +3887,45 @@ def render_process_execution():
     
     # 执行按钮
     if st.button("▶️ 执行", type="primary", key="execute_process_button"):
+        # 检查是否有任务正在运行（防止重复启动）
+        is_task_running_check, running_task_name, _ = _check_task_status()
+        if is_task_running_check:
+            st.warning(f"⚠️ {running_task_name}正在运行中，请先停止现有任务或等待其完成")
+            return
+        
         # 隐藏侧边栏
         st.session_state["hide_sidebar"] = True
         
-        if selected_process == "全流程":
-            enabled_platforms = [selected_platform_code] if selected_platform_code else None
-            _start_background_task("全流程", daily_limit=crawl_quantity, days_before=crawl_days_before, enabled_platforms=enabled_platforms)
-            st.success("✅ 全流程已启动，正在后台执行中...")
-        elif selected_process == "标书爬虫":
-            st.session_state['spider_running'] = False
-            st.session_state['spider_paused'] = False
-            st.session_state['selected_platform_code'] = selected_platform_code  # 保存平台选择
-            run_spider_with_progress()
-        elif selected_process == "文件解析":
-            _start_background_task("文件解析")
-            st.success("✅ 文件解析已启动，正在后台执行中...")
-        elif selected_process == "AI资质分析":
-            _start_background_task("AI资质分析")
-            st.success("✅ AI资质分析已启动，正在后台执行中...")
-        elif selected_process == "报告生成":
-            with st.spinner("正在生成报告..."):
-                try:
-                    report_generator.generate_report()
-                    st.success("✅ 报告生成完成！")
-                except Exception as e:
-                    st.error(f"❌ 报告生成失败：{str(e)}")
+        try:
+            if selected_process == "全流程":
+                enabled_platforms = [selected_platform_code] if selected_platform_code else None
+                _start_background_task("全流程", daily_limit=crawl_quantity, days_before=crawl_days_before, enabled_platforms=enabled_platforms)
+                st.success("✅ 全流程已启动，正在后台执行中...")
+            elif selected_process == "标书爬虫":
+                # 检查爬虫是否已经在运行
+                if st.session_state.get('spider_running', False):
+                    st.warning("⚠️ 爬虫已在运行中，请先停止现有爬虫")
+                    return
+                st.session_state['spider_running'] = False
+                st.session_state['spider_paused'] = False
+                st.session_state['selected_platform_code'] = selected_platform_code  # 保存平台选择
+                run_spider_with_progress()
+            elif selected_process == "文件解析":
+                _start_background_task("文件解析")
+                st.success("✅ 文件解析已启动，正在后台执行中...")
+            elif selected_process == "AI资质分析":
+                _start_background_task("AI资质分析")
+                st.success("✅ AI资质分析已启动，正在后台执行中...")
+            elif selected_process == "报告生成":
+                with st.spinner("正在生成报告..."):
+                    try:
+                        report_generator.generate_report()
+                        st.success("✅ 报告生成完成！")
+                    except Exception as e:
+                        st.error(f"❌ 报告生成失败：{str(e)}")
+        except Exception as e:
+            st.error(f"❌ 启动任务失败：{str(e)}")
+            log.error(f"启动任务失败：{str(e)}", exc_info=True)
     
     # 显示项目状态（下方，显示刷新按钮）
     _render_project_status(show_refresh=True)

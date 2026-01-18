@@ -1,4 +1,8 @@
-from langchain_community.llms import Ollama
+try:
+    from langchain_ollama import OllamaLLM as Ollama
+except ImportError:
+    # 兼容旧版本：如果 langchain_ollama 未安装，使用旧导入
+    from langchain_community.llms import Ollama
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from pydantic import BaseModel, Field

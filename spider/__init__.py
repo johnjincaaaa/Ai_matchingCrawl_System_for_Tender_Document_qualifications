@@ -44,6 +44,21 @@ except ImportError as e:
             pass  # 如果日志也失败，静默忽略
         JiaXingTenderSpider = None
 
+try:
+    from .platforms.ningbo import NingBoTenderSpider
+except ImportError as e:
+    # 如果相对导入失败，尝试绝对导入
+    try:
+        from spider.platforms.ningbo import NingBoTenderSpider
+    except ImportError as e2:
+        # 导入失败时记录错误，但不阻止整个包的加载
+        try:
+            from utils.log import log
+            log.warning(f"导入宁波市爬虫失败（相对导入: {str(e)}, 绝对导入: {str(e2)}），将只显示其他平台")
+        except:
+            pass  # 如果日志也失败，静默忽略
+        NingBoTenderSpider = None
+
 __all__ = [
     # 基础类和管理器
     "BaseSpider",
@@ -60,3 +75,6 @@ if HangZhouTenderSpider is not None:
 
 if JiaXingTenderSpider is not None:
     __all__.append("JiaXingTenderSpider")
+
+if NingBoTenderSpider is not None:
+    __all__.append("NingBoTenderSpider")

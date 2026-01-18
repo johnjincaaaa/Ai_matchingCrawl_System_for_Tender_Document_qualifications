@@ -186,6 +186,8 @@ class ReportGenerator:
                 platform_map = {
                     "浙江省政府采购网": "zhejiang",
                     "杭州市公共资源交易网": "hangzhou",
+                    "嘉兴禾采联综合采购服务平台": "jiaxing",
+                    "宁波市阳光采购服务平台": "ningbo",
                 }
                 for platform_name, code in platform_map.items():
                     if platform_name in site_name:
