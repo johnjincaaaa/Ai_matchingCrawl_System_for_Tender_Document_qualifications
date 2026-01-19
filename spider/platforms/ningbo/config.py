@@ -5,20 +5,9 @@ import os
 import requests
 from utils.log import log
 
-# 可选导入 execjs（如果未安装，get_access_token 会失败但不会阻止模块导入）
-try:
-    import execjs
-    EXECJS_AVAILABLE = True
-except ImportError as e:
-    EXECJS_AVAILABLE = False
-    import sys
-    python_path = sys.executable
-    log.warning(
-        f"execjs 模块未安装，动态获取 access_token 功能将不可用。\n"
-        f"当前 Python 路径: {python_path}\n"
-        f"请在该 Python 环境中安装: pip install PyExecJS\n"
-        f"或使用: {python_path} -m pip install PyExecJS"
-    )
+# execjs 将在运行时动态导入（不在模块导入时检查，避免需要重启应用）
+# 这样可以支持在运行时安装 PyExecJS 后立即生效
+EXECJS_AVAILABLE = None  # None 表示尚未检查
 
 PLATFORM_NAME = "宁波市阳光采购服务平台"
 PLATFORM_CODE = "ningbo"
@@ -67,17 +56,28 @@ def get_access_token() -> str:
     Returns:
         access_token字符串，失败返回空字符串
     """
+    global EXECJS_AVAILABLE
+    
     try:
-        # 运行时再次尝试导入 execjs（如果模块加载时失败）
-        if not EXECJS_AVAILABLE:
+        # 运行时动态导入 execjs（支持运行时安装后立即生效）
+        if EXECJS_AVAILABLE is None or not EXECJS_AVAILABLE:
             try:
                 import execjs
-                log.info("运行时成功导入 execjs 模块")
+                EXECJS_AVAILABLE = True
+                log.debug("成功导入 execjs 模块")
             except ImportError as e:
-                log.error("execjs 模块未安装，无法获取 access_token。请安装: pip install PyExecJS")
+                EXECJS_AVAILABLE = False
+                import sys
+                python_path = sys.executable
+                log.error(
+                    f"execjs 模块未安装，无法获取 access_token。\n"
+                    f"当前 Python 路径: {python_path}\n"
+                    f"请在该 Python 环境中安装: pip install PyExecJS\n"
+                    f"或使用: {python_path} -m pip install PyExecJS"
+                )
                 return ""
         
-        # 确保 execjs 已导入（可能是在运行时导入的）
+        # 确保 execjs 已导入
         import execjs
         
         # 检查是否有可用的 JavaScript 运行时
