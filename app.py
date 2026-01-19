@@ -233,44 +233,9 @@ try:
     from spider import SpiderManager
     from utils.log import log
     
-    # 确保导入所有平台爬虫（触发注册）
-    try:
-        from spider.platforms.hangzhou import HangZhouTenderSpider
-    except ImportError as e:
-        log.warning(f"导入杭州市爬虫失败（不影响系统运行）: {str(e)}")
-    
-    try:
-        from spider.platforms.jiaxing import JiaXingTenderSpider
-    except ImportError as e:
-        log.warning(f"导入嘉兴市爬虫失败（不影响系统运行）: {str(e)}")
-    
-    try:
-        from spider.platforms.ningbo import NingBoTenderSpider
-    except ImportError as e:
-        log.warning(f"导入宁波市爬虫失败（不影响系统运行）: {str(e)}")
-
-    # 初始化组件
-    try:
-        log.info("正在初始化FileParser...")
-        file_parser = FileParser()
-        log.info("FileParser初始化成功")
-    except Exception as e:
-        log.error(f"FileParser初始化失败: {str(e)}", exc_info=True)
-        raise
-    
-    # AIAnalyzer改为懒加载，避免模块级别阻塞（在真正需要时才初始化）
-    # 不再在模块级别初始化，改为在需要时通过get_ai_analyzer()函数获取
-    ai_analyzer = None  # 占位符，实际使用时通过get_ai_analyzer()获取
-    
-    try:
-        log.info("正在初始化ReportGenerator...")
-        report_generator = ReportGenerator()
-        log.info("ReportGenerator初始化成功")
-    except Exception as e:
-        log.error(f"ReportGenerator初始化失败: {str(e)}", exc_info=True)
-        raise
-    
-    log.info("系统初始化完成，所有组件已就绪")
+    # 爬虫模块导入和组件初始化改为懒加载，避免每次页面加载都执行
+    # 这些操作将在首次使用时通过缓存函数执行
+    log.debug("模块导入完成，组件将在首次使用时懒加载")
     SYSTEM_READY = True
 except Exception as e:
     st.error(f"❌ 系统初始化失败：{str(e)}")
@@ -355,16 +320,38 @@ def cleanup_resources():
         pass
 
 
-# 在页面加载时执行清理（每10次页面加载清理一次）
+# 在页面加载时执行清理（优化：减少检查频率）
 if 'page_load_count' not in st.session_state:
     st.session_state['page_load_count'] = 0
-st.session_state['page_load_count'] += 1
 
-# 每20次页面加载清理一次资源（减少清理频率，提升性能）
-if st.session_state['page_load_count'] % 20 == 0:
+# 每50次页面加载清理一次资源（进一步减少清理频率，提升性能）
+page_load_count = st.session_state['page_load_count']
+st.session_state['page_load_count'] = page_load_count + 1
+
+if page_load_count > 0 and page_load_count % 50 == 0:
     cleanup_resources()
 
 # ====================== 全局函数 ======================
+@st.cache_resource  # 使用 cache_resource 缓存资源对象
+def get_file_parser():
+    """懒加载获取FileParser实例，避免模块级别阻塞"""
+    try:
+        log.debug("初始化FileParser（懒加载）")
+        return FileParser()
+    except Exception as e:
+        log.error(f"FileParser初始化失败: {str(e)}", exc_info=True)
+        raise
+
+@st.cache_resource  # 使用 cache_resource 缓存资源对象
+def get_report_generator():
+    """懒加载获取ReportGenerator实例，避免模块级别阻塞"""
+    try:
+        log.debug("初始化ReportGenerator（懒加载）")
+        return ReportGenerator()
+    except Exception as e:
+        log.error(f"ReportGenerator初始化失败: {str(e)}", exc_info=True)
+        raise
+
 def get_ai_analyzer():
     """懒加载获取AIAnalyzer实例，避免模块级别阻塞"""
     # 在函数内部导入，确保总是可用
@@ -1122,8 +1109,9 @@ def _dict_to_project(project_dict):
 
 
 # ====================== 平台筛选辅助函数 ======================
+@st.cache_data(ttl=3600, max_entries=1)  # 缓存1小时，平台列表很少变化
 def get_available_platforms():
-    """获取所有可用的爬虫平台列表"""
+    """获取所有可用的爬虫平台列表（带缓存优化）"""
     try:
         # 确保导入所有平台爬虫（触发注册）
         try:
@@ -3146,7 +3134,7 @@ def _start_background_task(task_type, **kwargs):
                         break
                     
                     try:
-                        parser = FileParser()
+                        parser = get_file_parser()
                         parser.run()
                         break  # 执行完成，退出循环
                     except KeyboardInterrupt:
@@ -5612,7 +5600,7 @@ def render_report_export():
 
 def generate_report(start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None):
     """生成报告"""
-    report_gen = ReportGenerator()
+    report_gen = get_report_generator()
     return report_gen.generate_report(
         start_date=start_date,
         end_date=end_date,
@@ -5624,7 +5612,7 @@ def generate_report(start_date=None, end_date=None, regions=None, procurement_ty
 
 def preview_report(start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None):
     """预览报告内容"""
-    report_gen = ReportGenerator()
+    report_gen = get_report_generator()
     data = report_gen._get_project_data(
         start_date=start_date,
         end_date=end_date,
