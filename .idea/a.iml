@@ -5,7 +5,10 @@
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/Release-24.02.0-0" />
       <excludeFolder url="file://$MODULE_DIR$/Tesseract-OCR" />
+      <excludeFolder url="file://$MODULE_DIR$/reports" />
+      <excludeFolder url="file://$MODULE_DIR$/tender_files" />
     </content>
+    <content url="file://$MODULE_DIR$/spider/platforms/ningbo/js/node_modules" />
     <orderEntry type="jdk" jdkName="Python 3.9" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>

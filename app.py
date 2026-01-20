@@ -19,17 +19,22 @@ from types import SimpleNamespace
 import logging
 import warnings
 
-# ====================== 抑制Tornado WebSocket警告 ======================
-# 抑制所有警告（这些WebSocket错误通常作为警告输出）
-warnings.filterwarnings('ignore', category=RuntimeWarning)
-warnings.filterwarnings('ignore', message='.*websocket.*', category=Warning)
-warnings.filterwarnings('ignore', message='.*stream closed.*', category=Warning)
-# 配置Python标准库logging，过滤掉tornado websocket相关的警告
+# 配置Python标准库logging，过滤掉不需要的警告
 # 这些警告是框架层面的，不影响应用功能，但会产生大量日志噪音
 logging.getLogger('tornado').setLevel(logging.ERROR)  # 只显示ERROR级别以上的日志
 logging.getLogger('tornado.access').setLevel(logging.WARNING)  # 访问日志设置为WARNING
 logging.getLogger('tornado.application').setLevel(logging.ERROR)
 logging.getLogger('tornado.general').setLevel(logging.ERROR)
+
+# 过滤Streamlit ScriptRunContext警告
+logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
+
+# 抑制所有警告（这些WebSocket错误通常作为警告输出）
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', message='.*websocket.*', category=Warning)
+warnings.filterwarnings('ignore', message='.*stream closed.*', category=Warning)
+warnings.filterwarnings("ignore", message="missing ScriptRunContext!")
+warnings.filterwarnings("ignore", message="This warning can be ignored when running in bare mode.")
 
 # 创建一个自定义过滤器来完全屏蔽WebSocketClosedError相关日志（增强版）
 class WebSocketErrorFilter(logging.Filter):
@@ -222,7 +227,7 @@ st.set_page_config(
 
 # 导入系统核心模块
 try:
-    from config import COMPANY_QUALIFICATIONS, TEST_CONFIG, SPIDER_CONFIG, BASE_DIR, FILES_DIR, REPORT_DIR, STORAGE_CONFIG, LOG_DIR
+    from config import COMPANY_QUALIFICATIONS, TEST_CONFIG, SPIDER_CONFIG, BASE_DIR, FILES_DIR, REPORT_DIR, STORAGE_CONFIG, LOG_DIR, OBJECTIVE_SCORE_CONFIG
     from parser.file_parser import FileParser
     from ai.qualification_analyzer import AIAnalyzer
     from report.report_generator import ReportGenerator
@@ -416,14 +421,46 @@ def process_session_state_actions():
                         # 2. 比对资质
                         comparison_result, final_decision = ai_analyzer.compare_qualifications(project_requirements)
                         
-                        # 确保结果是中文的
+                        # 3. 应用客观分判定配置
+                        from config import OBJECTIVE_SCORE_CONFIG
+                        if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
+                            # 检查是否需要根据客观分丢分阈值调整最终决策
+                            if "客观分不满分" in final_decision:
+                                # 尝试从比对结果中提取丢分信息
+                                loss_score = 0.0
+                                # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
+                                import re
+                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                                if loss_match:
+                                    loss_score = float(loss_match.group(1))
+                                
+                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                if loss_score <= threshold:
+                                    # 丢分≤阈值，改为"推荐参与"
+                                    final_decision = "推荐参与"
+                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                            elif "推荐参与" in final_decision:
+                                # 检查是否需要根据丢分阈值改为"不推荐参与"
+                                loss_score = 0.0
+                                import re
+                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                                if loss_match:
+                                    loss_score = float(loss_match.group(1))
+                                
+                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                if loss_score > threshold:
+                                    # 丢分>阈值，改为"不推荐参与"
+                                    final_decision = "不推荐参与"
+                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                        
+                        # 4. 确保结果是中文的
                         if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
                             comparison_result = f"资质比对结果：{comparison_result}\n\n（注：以上为AI原始输出，已转换为中文显示）"
                     
                     # 2.5. 如果项目之前被移出推荐（有复核说明），移除旧的复核说明，使用新的分析结果
                     if project.comparison_result and ("【复核说明】" in project.comparison_result or "复核不推荐" in project.comparison_result):
                         # 如果新的结果是推荐，清除复核状态
-                        if final_decision in ["推荐参与", "可以参与", "客观分满分"]:
+                        if final_decision in ["推荐参与", "可以参与", "客观分满分", "通过"]:
                             project.review_status = None
                             project.review_result = None
                             project.review_reason = None
@@ -498,7 +535,39 @@ def process_session_state_actions():
                     # 2. 比对资质
                     comparison_result, final_decision = ai_analyzer.compare_qualifications(project_requirements)
                     
-                    # 确保结果是中文的
+                    # 3. 应用客观分判定配置
+                    from config import OBJECTIVE_SCORE_CONFIG
+                    if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
+                        # 检查是否需要根据客观分丢分阈值调整最终决策
+                        if "客观分不满分" in final_decision:
+                            # 尝试从比对结果中提取丢分信息
+                            loss_score = 0.0
+                            # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
+                            import re
+                            loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                            if loss_match:
+                                loss_score = float(loss_match.group(1))
+                            
+                            threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                            if loss_score <= threshold:
+                                # 丢分≤阈值，改为"推荐参与"
+                                final_decision = "推荐参与"
+                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                        elif "推荐参与" in final_decision:
+                            # 检查是否需要根据丢分阈值改为"不推荐参与"
+                            loss_score = 0.0
+                            import re
+                            loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                            if loss_match:
+                                loss_score = float(loss_match.group(1))
+                            
+                            threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                            if loss_score > threshold:
+                                # 丢分>阈值，改为"不推荐参与"
+                                final_decision = "不推荐参与"
+                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                    
+                    # 4. 确保结果是中文的
                     if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
                         comparison_result = f"资质比对结果：{comparison_result}\n\n（注：以上为AI原始输出，已转换为中文显示）"
                     
@@ -547,7 +616,7 @@ def get_project_stats():
             ).label('completed'),
             func.sum(
                 case((
-                    TenderProject.final_decision.in_(["可以参与", "客观分满分", "推荐参与"]), 1
+                    TenderProject.final_decision.in_(["可以参与", "客观分满分", "推荐参与", "通过"]), 1
                 ), else_=0)
             ).label('qualified')
         ).first()
@@ -744,7 +813,7 @@ def render_objective_score_analysis(objective_scores, key_suffix=""):
                             # 添加数据标签
                             fig.update_traces(texttemplate='%{y}', textposition='outside', textfont_size=10)
                         
-                        st.plotly_chart(fig, config={"displayModeBar": True}, use_container_width=True)
+                        st.plotly_chart(fig, config={"displayModeBar": True}, width='stretch')
                     
                     # 总分计算（确保item是字典类型）
                     total_score = sum(item.get('score', 0) if isinstance(item, dict) else 0 for item in objective_data)
@@ -799,7 +868,7 @@ def render_subjective_score_analysis(subjective_scores, key_suffix=""):
                         )
                         # 添加数据标签
                         fig.update_traces(texttemplate='%{y}', textposition='outside', textfont_size=10)
-                        st.plotly_chart(fig, config={"displayModeBar": True}, use_container_width=True)
+                        st.plotly_chart(fig, config={"displayModeBar": True}, width='stretch')
                 else:
                     st.text_area("主观分数据", subjective_scores, height=200, key=f"subjective_scores_raw_{key_suffix}_{id(subjective_scores)}")
             except json.JSONDecodeError:
@@ -1042,7 +1111,7 @@ def get_today_project_stats():
             ).label('completed'),
             func.sum(
                 case((
-                    TenderProject.final_decision.in_(["可以参与", "客观分满分", "推荐参与"]), 1
+                    TenderProject.final_decision.in_(["可以参与", "客观分满分", "推荐参与", "通过"]), 1
                 ), else_=0)
             ).label('qualified')
         ).filter(
@@ -1128,6 +1197,11 @@ def get_available_platforms():
             from spider.platforms.ningbo import NingBoTenderSpider
         except Exception as e:
             log.warning(f"导入宁波市爬虫失败: {str(e)}", exc_info=True)
+
+        try:
+            from spider.platforms.shaoxing import ShaoXingTenderSpider
+        except Exception as e:
+            log.warning(f"导入绍兴市爬虫失败: {str(e)}", exc_info=True)
         
         platforms = SpiderManager.list_all_spider_info()
         log.debug(f"已注册的爬虫平台: {[p['code'] for p in platforms]}")
@@ -1147,6 +1221,7 @@ def extract_platform_code(site_name):
         "杭州市公共资源交易网": "hangzhou",
         "嘉兴禾采联综合采购服务平台": "jiaxing",
         "宁波市阳光采购服务平台": "ningbo",
+        "绍兴市阳光采购服务平台": "shaoxing",
     }
     
     for platform_name, code in platform_map.items():
@@ -1305,7 +1380,7 @@ def get_pending_review_projects():
     db = next(get_db())
     projects = db.query(TenderProject).filter(
         TenderProject.status == ProjectStatus.COMPARED,
-        TenderProject.final_decision.in_(["可以参与", "客观分满分", "推荐参与"]),
+        TenderProject.final_decision.in_(["可以参与", "客观分满分", "推荐参与", "通过"]),
         TenderProject.all_objective_recommended == 1,
         TenderProject.review_status == "待复核"
     ).all()
@@ -2772,7 +2847,39 @@ def run_ai_analysis_with_progress():
                 # 2. 比对资质
                 comparison_result, final_decision = ai_analyzer.compare_qualifications(project_requirements)
                 
-                # 确保结果是中文的，如果不是则格式化
+                # 3. 应用客观分判定配置
+                from config import OBJECTIVE_SCORE_CONFIG
+                if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
+                    # 检查是否需要根据客观分丢分阈值调整最终决策
+                    if "客观分不满分" in final_decision:
+                        # 尝试从比对结果中提取丢分信息
+                        loss_score = 0.0
+                        # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
+                        import re
+                        loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                        if loss_match:
+                            loss_score = float(loss_match.group(1))
+                        
+                        threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                        if loss_score <= threshold:
+                            # 丢分≤阈值，改为"推荐参与"
+                            final_decision = "推荐参与"
+                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                    elif "推荐参与" in final_decision:
+                        # 检查是否需要根据丢分阈值改为"不推荐参与"
+                        loss_score = 0.0
+                        import re
+                        loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                        if loss_match:
+                            loss_score = float(loss_match.group(1))
+                        
+                        threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                        if loss_score > threshold:
+                            # 丢分>阈值，改为"不推荐参与"
+                            final_decision = "不推荐参与"
+                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                
+                # 4. 确保结果是中文的，如果不是则格式化
                 if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
                     # 如果结果不是中文格式，则添加中文说明
                     comparison_result = f"资质比对结果：{comparison_result}\n\n（注：以上为AI原始输出，已转换为中文显示）"
@@ -3084,6 +3191,18 @@ def _start_background_task(task_type, **kwargs):
     
     # 启动对应的线程函数（增强异常处理，防止应用崩溃）
     if task_type == "全流程":
+        def safe_get_session_state(key, default=False):
+            """安全地获取session_state值，避免ScriptRunContext警告"""
+            try:
+                import streamlit
+                from streamlit.runtime.scriptrunner import get_script_run_ctx
+                ctx = get_script_run_ctx()
+                if ctx:
+                    return st.session_state.get(key, default)
+                return default
+            except:
+                return default
+                
         def run_task():
             try:
                 from auto_run_full_process import run_full_process_cli
@@ -3092,12 +3211,12 @@ def _start_background_task(task_type, **kwargs):
                 enabled_platforms = kwargs.get("enabled_platforms", None)
                 
                 # 检查是否被停止
-                while not st.session_state.get(config["stopped_key"], False):
+                while not safe_get_session_state(config["stopped_key"]):
                     # 检查是否被暂停
-                    while st.session_state.get(config["paused_key"], False) and not st.session_state.get(config["stopped_key"], False):
+                    while safe_get_session_state(config["paused_key"]) and not safe_get_session_state(config["stopped_key"]):
                         time.sleep(1)  # 暂停时等待
                     
-                    if st.session_state.get(config["stopped_key"], False):
+                    if safe_get_session_state(config["stopped_key"]):
                         log.warning("全流程执行被用户终止")
                         break
                     
@@ -3113,23 +3232,44 @@ def _start_background_task(task_type, **kwargs):
             except Exception as e:
                 log.error(f"全流程任务启动失败：{str(e)}", exc_info=True)
             finally:
-                # 清除session_state
-                st.session_state[config["session_key"]] = False
-                st.session_state[config["stopped_key"]] = False
-                st.session_state[config["paused_key"]] = False
+                # 尝试清除session_state（仅在有ScriptRunContext时执行）
+                try:
+                    import streamlit
+                    from streamlit.runtime.scriptrunner import get_script_run_ctx
+                    ctx = get_script_run_ctx()
+                    if ctx:
+                        # 清除session_state
+                        st.session_state[config["session_key"]] = False
+                        st.session_state[config["stopped_key"]] = False
+                        st.session_state[config["paused_key"]] = False
+                except:
+                    # 如果发生任何异常，忽略它（不能在后台线程中安全更新session_state）
+                    pass
         
     elif task_type == "文件解析":
+        def safe_get_session_state(key, default=False):
+            """安全地获取session_state值，避免ScriptRunContext警告"""
+            try:
+                import streamlit
+                from streamlit.runtime.scriptrunner import get_script_run_ctx
+                ctx = get_script_run_ctx()
+                if ctx:
+                    return st.session_state.get(key, default)
+                return default
+            except:
+                return default
+                
         def run_task():
             try:
                 from parser.file_parser import FileParser
                 
                 # 检查是否被停止
-                while not st.session_state.get(config["stopped_key"], False):
+                while not safe_get_session_state(config["stopped_key"]):
                     # 检查是否被暂停
-                    while st.session_state.get(config["paused_key"], False) and not st.session_state.get(config["stopped_key"], False):
+                    while safe_get_session_state(config["paused_key"]) and not safe_get_session_state(config["stopped_key"]):
                         time.sleep(1)  # 暂停时等待
                     
-                    if st.session_state.get(config["stopped_key"], False):
+                    if safe_get_session_state(config["stopped_key"]):
                         log.warning("文件解析被用户终止")
                         break
                     
@@ -3146,12 +3286,35 @@ def _start_background_task(task_type, **kwargs):
             except Exception as e:
                 log.error(f"文件解析任务启动失败：{str(e)}", exc_info=True)
             finally:
-                # 清除session_state
-                st.session_state[config["session_key"]] = False
-                st.session_state[config["stopped_key"]] = False
-                st.session_state[config["paused_key"]] = False
+                # 尝试清除session_state（仅在有ScriptRunContext时执行）
+                try:
+                    import streamlit
+                    from streamlit.runtime.scriptrunner import get_script_run_ctx
+                    ctx = get_script_run_ctx()
+                    if ctx:
+                        # 清除session_state
+                        st.session_state[config["session_key"]] = False
+                        st.session_state[config["stopped_key"]] = False
+                        st.session_state[config["paused_key"]] = False
+                except:
+                    # 如果发生任何异常，忽略它（不能在后台线程中安全更新session_state）
+                    pass
     
     elif task_type == "AI资质分析":
+        def safe_get_session_state(key, default=False):
+            """安全地获取session_state值，避免ScriptRunContext警告"""
+            try:
+                # 尝试安全访问session_state
+                import streamlit
+                from streamlit.runtime.scriptrunner import get_script_run_ctx
+                ctx = get_script_run_ctx()
+                if ctx:
+                    return st.session_state.get(key, default)
+                return default
+            except:
+                # 如果发生任何异常，返回默认值
+                return default
+                
         def run_task():
             db = None
             try:
@@ -3159,12 +3322,12 @@ def _start_background_task(task_type, **kwargs):
                 from utils.db import get_db, TenderProject, ProjectStatus, update_project
                 
                 # 检查是否被停止
-                while not st.session_state.get(config["stopped_key"], False):
+                while not safe_get_session_state(config["stopped_key"]):
                     # 检查是否被暂停
-                    while st.session_state.get(config["paused_key"], False) and not st.session_state.get(config["stopped_key"], False):
+                    while safe_get_session_state(config["paused_key"]) and not safe_get_session_state(config["stopped_key"]):
                         time.sleep(1)  # 暂停时等待
                     
-                    if st.session_state.get(config["stopped_key"], False):
+                    if safe_get_session_state(config["stopped_key"]):
                         log.warning("AI资质分析被用户终止")
                         break
                     
@@ -3183,15 +3346,15 @@ def _start_background_task(task_type, **kwargs):
                             processed_count = 0
                             for project in projects:
                                 # 检查是否被停止
-                                if st.session_state.get(config["stopped_key"], False):
+                                if safe_get_session_state(config["stopped_key"]):
                                     log.warning(f"AI资质分析被用户终止，已处理 {processed_count}/{len(projects)} 个项目")
                                     break
                                 
                                 # 检查是否被暂停
-                                while st.session_state.get(config["paused_key"], False) and not st.session_state.get(config["stopped_key"], False):
+                                while safe_get_session_state(config["paused_key"]) and not safe_get_session_state(config["stopped_key"]):
                                     time.sleep(1)
                                 
-                                if st.session_state.get(config["stopped_key"], False):
+                                if safe_get_session_state(config["stopped_key"]):
                                     log.warning(f"AI资质分析被用户终止，已处理 {processed_count}/{len(projects)} 个项目")
                                     break
                                 
@@ -3215,6 +3378,39 @@ def _start_background_task(task_type, **kwargs):
                                         requirements = analyzer.extract_requirements(project.evaluation_content)
                                         # 2. 比对资质
                                         comparison, decision = analyzer.compare_qualifications(requirements)
+                                        
+                                        # 3. 应用客观分判定配置
+                                        from config import OBJECTIVE_SCORE_CONFIG
+                                        if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
+                                            # 检查是否需要根据客观分丢分阈值调整最终决策
+                                            if "客观分不满分" in decision:
+                                                # 尝试从比对结果中提取丢分信息
+                                                loss_score = 0.0
+                                                # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
+                                                import re
+                                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison)
+                                                if loss_match:
+                                                    loss_score = float(loss_match.group(1))
+                                                
+                                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                                if loss_score <= threshold:
+                                                    # 丢分≤阈值，改为"推荐参与"
+                                                    decision = "推荐参与"
+                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                                            elif "推荐参与" in decision:
+                                                # 检查是否需要根据丢分阈值改为"不推荐参与"
+                                                loss_score = 0.0
+                                                import re
+                                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison)
+                                                if loss_match:
+                                                    loss_score = float(loss_match.group(1))
+                                                
+                                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                                if loss_score > threshold:
+                                                    # 丢分>阈值，改为"不推荐参与"
+                                                    decision = "不推荐参与"
+                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                                        
                                         update_project(db, project.id, {
                                             "project_requirements": requirements,
                                             "ai_extracted_text": requirements,
@@ -3296,10 +3492,19 @@ def _start_background_task(task_type, **kwargs):
                         db.close()
                 except:
                     pass
-                # 清除session_state
-                st.session_state[config["session_key"]] = False
-                st.session_state[config["stopped_key"]] = False
-                st.session_state[config["paused_key"]] = False
+                # 尝试清除session_state（仅在有ScriptRunContext时执行）
+                try:
+                    import streamlit
+                    from streamlit.runtime.scriptrunner import get_script_run_ctx
+                    ctx = get_script_run_ctx()
+                    if ctx:
+                        # 清除session_state
+                        st.session_state[config["session_key"]] = False
+                        st.session_state[config["stopped_key"]] = False
+                        st.session_state[config["paused_key"]] = False
+                except:
+                    # 如果发生任何异常，忽略它（不能在后台线程中安全更新session_state）
+                    pass
     
     thread = Thread(target=run_task, daemon=False, name=f"{task_type}Thread")
     thread.start()
@@ -3346,7 +3551,7 @@ def _render_project_status(show_refresh=True):
         if status_data:
             fig = px.pie(values=list(status_data.values()), names=list(status_data.keys()),
                         title="当日项目状态分布", hole=0.3)
-            st.plotly_chart(fig, config={"displayModeBar": True}, use_container_width=True)
+            st.plotly_chart(fig, config={"displayModeBar": True}, width='stretch')
         
         st.markdown("### 📊 状态统计")
         sorted_items = sorted(status_data.items(), key=lambda x: status_order.index(x[0]) if x[0] in status_order else len(status_order))
@@ -3907,6 +4112,7 @@ def render_process_execution():
             elif selected_process == "报告生成":
                 with st.spinner("正在生成报告..."):
                     try:
+                        report_generator = get_report_generator()
                         report_generator.generate_report()
                         st.success("✅ 报告生成完成！")
                     except Exception as e:
@@ -4584,6 +4790,39 @@ def run_full_process():
                         
                         try:
                             comparison_result, final_decision = ai_analyzer.compare_qualifications(project_requirements)
+                            
+                            # 应用客观分判定配置
+                            from config import OBJECTIVE_SCORE_CONFIG
+                            if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
+                                # 检查是否需要根据客观分丢分阈值调整最终决策
+                                if "客观分不满分" in final_decision:
+                                    # 尝试从比对结果中提取丢分信息
+                                    loss_score = 0.0
+                                    # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
+                                    import re
+                                    loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                                    if loss_match:
+                                        loss_score = float(loss_match.group(1))
+                                    
+                                    threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                    if loss_score <= threshold:
+                                        # 丢分≤阈值，改为"推荐参与"
+                                        final_decision = "推荐参与"
+                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                                elif "推荐参与" in final_decision:
+                                    # 检查是否需要根据丢分阈值改为"不推荐参与"
+                                    loss_score = 0.0
+                                    import re
+                                    loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
+                                    if loss_match:
+                                        loss_score = float(loss_match.group(1))
+                                    
+                                    threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                    if loss_score > threshold:
+                                        # 丢分>阈值，改为"不推荐参与"
+                                        final_decision = "不推荐参与"
+                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                            
                             compare_elapsed = time.time() - compare_start_time
                             log.info(f"项目 {project.id} 资质比对完成，耗时 {compare_elapsed:.2f} 秒，最终判定：{final_decision}")
                             
@@ -4677,6 +4916,7 @@ def run_full_process():
             time.sleep(0.5)
             status_text.info("📊 正在生成报告...")
             try:
+                report_generator = get_report_generator()
                 report_generator.generate_report()
                 status_text.success("✅ 报告生成完成")
             except Exception as report_error:
@@ -4938,7 +5178,7 @@ def render_result_visualization():
         # 状态概览（基于筛选后的项目）
         # 优化：使用集合和单次遍历计算统计信息
         filtered_total = len(completed_projects)
-        qualified_set = {"可以参与", "客观分满分", "推荐参与"}
+        qualified_set = {"可以参与", "客观分满分", "推荐参与", "通过"}
         unqualified_set = {"不可以参与", "客观分不满分", "不推荐参与"}
         
         # 优化：单次遍历计算所有统计信息，而不是多次遍历
@@ -4986,7 +5226,7 @@ def render_result_visualization():
         # 只在数据量不太大时显示（超过1000个项目时跳过，避免卡顿）
         if len(completed_projects) <= 1000:
             source_data = {}
-            qualified_set = {"可以参与", "客观分满分", "推荐参与"}
+            qualified_set = {"可以参与", "客观分满分", "推荐参与", "通过"}
             for project in completed_projects:
                 # 优化：使用find代替split，减少字符串操作
                 site_name = project.site_name or ""
@@ -5009,7 +5249,7 @@ def render_result_visualization():
                     }
                     for k, v in source_data.items()
                 ])
-                st.dataframe(source_df, width='stretch', use_container_width=True)
+                st.dataframe(source_df, width='stretch')
         else:
             st.info(f"📊 项目数量较多（{len(completed_projects)}个），已隐藏来源分布图表以提升性能")
 
@@ -5018,7 +5258,7 @@ def render_result_visualization():
         st.subheader("📋 项目详情")
         
         # 优化：使用集合进行快速查找，减少列表遍历次数
-        qualified_set = {"可以参与", "客观分满分", "推荐参与"}
+        qualified_set = {"可以参与", "客观分满分", "推荐参与", "通过"}
         unqualified_set = {"不可以参与", "客观分不满分", "不推荐参与"}
         
         # 将项目分为推荐参与和不推荐参与两个列表（优化：单次遍历完成分类）
@@ -5155,7 +5395,7 @@ def render_result_visualization():
                 # 创建项目卡片（优化：使用Streamlit原生组件代替复杂HTML，提升性能）
                 with st.container():
                     # 根据判定结果设置不同的颜色和图标（优化：使用集合快速判断）
-                    qualified_set = {"可以参与", "客观分满分", "推荐参与"}
+                    qualified_set = {"可以参与", "客观分满分", "推荐参与", "通过"}
                     unqualified_set = {"不可以参与", "客观分不满分", "不推荐参与"}
                     
                     if project.final_decision in qualified_set:
@@ -5275,7 +5515,7 @@ def render_result_visualization():
                 
                 # 创建隐藏的模态窗口
                 with st.expander(f"项目 {project.id} 详情", expanded=False):
-                    render_project_details(project, project_id_suffix="", include_file_download=True, is_visualization=True)
+                    render_project_details(project, project_id_suffix="", include_file_download=True, is_visualization=False)
         
         # 显示不推荐参与的项目（添加分页，提升性能）
         if not_recommended_projects:
@@ -5468,6 +5708,7 @@ def render_report_export():
     
     # 提取所有城市（使用报告生成器的提取方法）
     all_cities = set()
+    report_generator = get_report_generator()  # 获取报告生成器实例
     for proj in all_projects:
         if proj.region:
             _, city = report_generator._extract_province_city(proj.region)

@@ -175,13 +175,14 @@ class SpiderManager:
             raise
     
     @classmethod
-    def run_all_spiders(cls, days_before=None, enabled_platforms=None) -> List:
+    def run_all_spiders(cls, days_before=None, enabled_platforms=None, total_limit=None) -> List:
         """
         运行所有爬虫或指定平台爬虫
         
         Args:
             days_before: 时间间隔，爬取最近N天内的文件（None表示只爬取当日）
             enabled_platforms: 启用的平台列表（None表示全部启用）
+            total_limit: 总爬取数量限制（None表示不限制）
             
         Returns:
             List: 所有爬虫返回的项目列表（合并后）
@@ -208,17 +209,35 @@ class SpiderManager:
         
         # 依次运行每个平台的爬虫
         for platform_code in enabled_platforms:
+            # 检查是否已达到总爬取限制
+            if total_limit is not None and len(all_projects) >= total_limit:
+                log.info(f"已达到总爬取限制 {total_limit}，停止爬取")
+                break
+            
             try:
                 log.info(f"=" * 50)
                 log.info(f"开始运行平台: {platform_code}")
                 log.info(f"=" * 50)
                 
-                spider = cls.create_spider(platform_code, days_before=days_before)
+                # 计算当前平台可爬取的数量
+                remaining_limit = None
+                if total_limit is not None:
+                    remaining_limit = total_limit - len(all_projects)
+                    log.info(f"当前平台剩余可爬取数量: {remaining_limit}")
+                
+                spider = cls.create_spider(platform_code, days_before=days_before, daily_limit=remaining_limit)
                 projects = spider.run()
+                
+                # 如果有总限制，只添加剩余数量的项目
+                if total_limit is not None:
+                    remaining = total_limit - len(all_projects)
+                    if len(projects) > remaining:
+                        projects = projects[:remaining]
+                        log.info(f"平台 {platform_code} 实际爬取 {len(projects)} 个项目（已达到总限制）")
                 
                 all_projects.extend(projects)
                 
-                log.info(f"平台 {platform_code} 爬取完成，获取 {len(projects)} 个项目")
+                log.info(f"平台 {platform_code} 爬取完成，获取 {len(projects)} 个项目，累计已爬取 {len(all_projects)} 个项目")
                 
             except Exception as e:
                 log.error(f"平台 {platform_code} 爬取失败: {str(e)}", exc_info=True)

@@ -46,26 +46,15 @@ PARSE_CONFIG = {
 
 # AI配置 - 支持本地和云模型两套流程
 AI_CONFIG = {
-    "provider": "ollama",  # 只保留Ollama配置
-    "ollama": {
-        # 默认使用云模型
-        "default_model": "cloud",  # 可选值: "local" 或 "cloud "
-        
-        # 本地模型配置
-        "local_model": {
-            "model_name": "llama3:8b",  # 本地轻量级模型
-            "base_url": "http://localhost:11434",  # Ollama服务地址
-            "temperature": 0.05,  # 低温度保证结果稳定性
-            "cuda": True  # CUDA加速选项
-        },
-        
-        # 云模型配置
-        "cloud_model": {
-            "model_name": "qwen3-coder:480b-cloud",  # 云模型
-            "base_url": "http://localhost:11434",  # Ollama服务地址
-            "temperature": 0.05,  # 低温度保证结果稳定性
-            "cuda": True  # CUDA加速选项
-        }
+    "provider": "dashscope",  # 默认使用DashScope
+    
+    # 阿里云DashScope配置
+    "dashscope": {
+        "api_key": "sk-8fc78116431e48599dcf498ab2aa34a0",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model_name": "qwen-plus",  # 支持长文本的模型
+        "temperature": 0.05,
+        "max_tokens": 4000  # 适当的输出token限制
     },
     "extract_prompt_path": os.path.join(BASE_DIR, "prompts", "extract_prompt.txt"),
     "compare_prompt_path": os.path.join(BASE_DIR, "prompts", "compare_prompt.txt"),
@@ -85,7 +74,7 @@ AI_CONFIG = {
     
     # 请求频率控制配置
     "rate_limiting": {
-        "enable": True,  # 启用请求频率控制
+        "enable": False,  # 启用请求频率控制
         "max_requests_per_hour": 80,  # 每小时最大请求数（留出缓冲，实际约37-38个）
         "min_interval_seconds": 30,  # 两次请求之间的最小间隔（秒）
         "burst_allowance": 5,  # 突发请求允许数量（用于处理积压）
@@ -96,6 +85,16 @@ AI_CONFIG = {
         "use_semantic_match": True,  # 是否启用语义匹配（True：使用语义匹配，False：使用关键词匹配）
         "semantic_threshold": 0.7,  # 语义相似度阈值（0-1之间，越高越严格，建议0.6-0.8）
         "embedding_model": "nomic-embed-text",  # 使用的embedding模型（需要支持中文）
+    },
+    
+    # 服务类项目判断配置
+    "service_check": {
+        "enable": True,  # 是否启用服务类项目判断（False：手动启用，需要时设为True）
+    },
+    
+    # 资质关键词检查配置
+    "qualification_keyword_check": {
+        "enable": True,  # 是否启用资质关键词检查（False：手动启用，需要时设为True）
     }
 }
 

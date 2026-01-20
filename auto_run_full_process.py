@@ -98,19 +98,16 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                 return False
         else:
             # 正常模式：执行爬虫
-            if daily_limit is not None:
-                original_limit = SPIDER_CONFIG['daily_limit']
-                SPIDER_CONFIG['daily_limit'] = daily_limit
-                logger.info(f"📊 临时设置爬取数量为：{daily_limit}")
-            
             try:
-                all_projects = SpiderManager.run_all_spiders(days_before=days_before, enabled_platforms=enabled_platforms)
+                all_projects = SpiderManager.run_all_spiders(
+                    days_before=days_before, 
+                    enabled_platforms=enabled_platforms,
+                    total_limit=daily_limit
+                )
                 logger.info(f"✅ 爬虫完成，共获取 {len(all_projects)} 个项目")
-            finally:
-                # 恢复原始配置
-                if daily_limit is not None and 'original_limit' in locals():
-                    SPIDER_CONFIG['daily_limit'] = original_limit
-                    logger.info(f"📊 已将爬取数量恢复为 {original_limit}")
+            except Exception as e:
+                logger.error(f"❌ 爬虫执行失败：{str(e)}", exc_info=True)
+                raise
             
             if len(all_projects) == 0:
                 logger.warning("⚠️ 未爬取到有效项目，跳过后续步骤")
@@ -186,26 +183,33 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                             
                             logger.info(f"项目 {project.id} 不是服务类项目，继续分析")
                             
-                            # 0.1. 检查公告内容中是否包含资质相关关键词
-                            qualification_keywords = ['资质', '许可证', '认证', '备案', '执业资格', '许可', '等级证书']
+                            # 检查项目是否包含资质相关关键词（如果包含则删除，避免不必要的分析）
+                            from config import AI_CONFIG
+                            enable_keyword_check = AI_CONFIG.get("qualification_keyword_check", {}).get("enable", False)
+                            
                             has_qualification_keywords = False
                             matched_keywords = []
                             
-                            for keyword in qualification_keywords:
-                                if keyword in project.evaluation_content:
-                                    has_qualification_keywords = True
-                                    matched_keywords.append(keyword)
-                            
-                            if has_qualification_keywords:
-                                reason = f"项目包含资质相关关键词：{', '.join(matched_keywords)}"
-                                logger.info(f"⚠️ 项目 {project.id} 包含资质关键词，删除项目：{reason}")
-                                # 删除项目（从数据库删除）
-                                db.delete(project)
-                                db.commit()
-                                logger.info(f"✅ 含资质关键词项目已删除：{project.project_name}（ID：{project.id}）")
-                                continue  # 跳过后续分析
-                            
-                            logger.info(f"项目 {project.id} 不包含资质关键词，继续分析")
+                            if enable_keyword_check:
+                                qualification_keywords = ['资质', '许可证', '认证', '备案', '执业资格', '许可', '等级证书']
+                                
+                                for keyword in qualification_keywords:
+                                    if keyword in project.evaluation_content:
+                                        has_qualification_keywords = True
+                                        matched_keywords.append(keyword)
+                                
+                                if has_qualification_keywords:
+                                    reason = f"项目包含资质相关关键词：{', '.join(matched_keywords)}"
+                                    logger.info(f"⚠️ 项目 {project.id} 包含资质关键词，删除项目：{reason}")
+                                    # 删除项目（从数据库删除）
+                                    db.delete(project)
+                                    db.commit()
+                                    logger.info(f"✅ 含资质关键词项目已删除：{project.project_name}（ID：{project.id}）")
+                                    continue  # 跳过后续分析
+                                
+                                logger.info(f"项目 {project.id} 不包含资质关键词，继续分析")
+                            else:
+                                logger.info(f"资质关键词检查已禁用，跳过检查，继续分析项目 {project.id}")
                             
                             # 1. 提取资质要求（与流程控制保持一致）
                             project_requirements = analyzer.extract_requirements(project.evaluation_content)

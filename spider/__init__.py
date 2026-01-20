@@ -59,6 +59,19 @@ except ImportError as e:
             pass  # 如果日志也失败，静默忽略
         NingBoTenderSpider = None
 
+try:
+    from .platforms.shaoxing import ShaoXingTenderSpider
+except ImportError as e:
+    try:
+        from spider.platforms.shaoxing import ShaoXingTenderSpider
+    except ImportError as e2:
+        try:
+            from utils.log import log
+            log.warning(f"导入绍兴市爬虫失败（相对导入: {str(e)}, 绝对导入: {str(e2)}），将只显示其他平台")
+        except:
+            pass
+        ShaoXingTenderSpider = None
+
 __all__ = [
     # 基础类和管理器
     "BaseSpider",
@@ -78,3 +91,6 @@ if JiaXingTenderSpider is not None:
 
 if NingBoTenderSpider is not None:
     __all__.append("NingBoTenderSpider")
+
+if ShaoXingTenderSpider is not None:
+    __all__.append("ShaoXingTenderSpider")

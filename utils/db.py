@@ -40,7 +40,6 @@ Base = declarative_base()
 
 # 项目状态枚举
 class ProjectStatus(str, enum.Enum):
-    PENDING = "待处理"
     DOWNLOADED = "已下载"
     PARSED = "已解析"
     ANALYZED = "已分析"
@@ -63,7 +62,7 @@ class TenderProject(Base):
     ai_extracted_text = Column(Text, comment="AI提取的原始文本")
     project_requirements = Column(Text, comment="AI提取的资质要求")
     comparison_result = Column(Text, comment="资质比对结果")
-    status = Column(Enum(ProjectStatus), default=ProjectStatus.PENDING, comment="项目状态")
+    status = Column(Enum(ProjectStatus), default=ProjectStatus.DOWNLOADED, comment="项目状态")
     error_msg = Column(Text, comment="错误信息")
     create_time = Column(DateTime, default=datetime.now, comment="创建时间")
     update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")

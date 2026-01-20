@@ -10,7 +10,6 @@ langchain-community==0.2.19
 langchain-core==0.2.43
 langchain-text-splitters==0.2.4
 langsmith==0.1.147
-ollama==0.1.2
 python-docx==1.1.0
 PyPDF2==3.0.1
 PyMuPDF==1.23.6

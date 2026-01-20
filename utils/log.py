@@ -6,15 +6,16 @@ from config import LOG_CONFIG
 # 移除默认日志配置
 logger.remove()
 
-# 配置日志输出（文件+控制台），添加过滤器过滤WebSocket错误
+# 配置日志输出（文件+控制台），添加过滤器过滤WebSocket和ScriptRunContext错误
 def filter_websocket_errors(record):
-    """过滤WebSocket相关错误"""
+    """过滤WebSocket和ScriptRunContext相关错误"""
     message = str(record["message"]).lower()
     if any(keyword in message for keyword in [
         'websocketclosederror', 'websocket closed',
         'streamclosederror', 'stream is closed',
         'task exception was never retrieved',
-        'tornado.websocket', 'tornado.iostream'
+        'tornado.websocket', 'tornado.iostream',
+        'missing scriptruncontext', 'this warning can be ignored when running in bare mode'
     ]):
         return False
     return True
