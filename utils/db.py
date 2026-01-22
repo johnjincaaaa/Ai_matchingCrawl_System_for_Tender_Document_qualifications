@@ -45,6 +45,7 @@ class ProjectStatus(str, enum.Enum):
     ANALYZED = "已分析"
     COMPARED = "已比对"
     ERROR = "异常"
+    EXCLUDED = "已排除"
 
 # 项目表模型
 class TenderProject(Base):
@@ -178,15 +179,34 @@ def init_db():
 
 # 获取数据库会话
 def get_db():
-    db = SessionLocal()
+    """获取数据库会话，使用上下文管理器确保连接正确关闭"""
+    db = None
     try:
+        db = SessionLocal()
         yield db
+    except Exception as e:
+        log.error(f"数据库会话出错：{str(e)}")
+        if db:
+            db.rollback()
+        raise
     finally:
-        db.close()
+        if db:
+            try:
+                db.close()
+            except Exception as e:
+                log.warning(f"关闭数据库连接时出错：{str(e)}")
 
 # 保存项目数据
 def save_project(db, project_data):
     try:
+        # 检查项目是否已存在（通过project_id）
+        project_id = project_data.get('project_id')
+        if project_id:
+            existing_project = db.query(TenderProject).filter_by(project_id=project_id).first()
+            if existing_project:
+                log.info(f"项目已存在（project_id: {project_id}），跳过保存：{project_data.get('project_name', 'Unknown')[:50]}")
+                return existing_project
+        
         # 验证 publish_time 是否存在（仅记录警告，不拒绝保存）
         if "publish_time" in project_data:
             publish_time = project_data["publish_time"]

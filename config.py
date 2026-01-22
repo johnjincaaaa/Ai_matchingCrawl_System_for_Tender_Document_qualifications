@@ -1,11 +1,45 @@
 import os
 from datetime import timedelta
+try:
+    # 可选依赖：未安装python-dotenv时也允许系统启动
+    from dotenv import load_dotenv  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    def load_dotenv(*args, **kwargs):
+        return False
+
+# 加载环境变量
+load_dotenv()
 
 # 基础配置
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 FILES_DIR = os.path.join(BASE_DIR, "tender_files")
 REPORT_DIR = os.path.join(BASE_DIR, "reports")
+
+# 日志配置（供 utils/log.py 使用）
+LOG_CONFIG = {
+    "file_name": os.path.join(LOG_DIR, "tender_system.log"),  # 主日志文件
+    "level": os.getenv("LOG_LEVEL", "INFO"),                  # 日志级别：DEBUG/INFO/WARNING/ERROR
+    "rotation": "100 MB",                                     # 单个日志文件最大大小，自动轮转
+    "retention": "7 days",                                    # 保留7天历史日志
+}
+
+# 数据库配置
+# 默认使用SQLite（零配置），也可通过环境变量切换到PostgreSQL
+DB_CONFIG = {
+    # sqlite / postgresql
+    "db_type": os.getenv("DB_TYPE", "sqlite").lower(),
+
+    # SQLite配置
+    "db_path": os.getenv("SQLITE_DB_PATH", os.path.join(BASE_DIR, "tender_system.db")),
+
+    # PostgreSQL配置（db_type=postgresql时使用）
+    "host": os.getenv("PG_HOST", "127.0.0.1"),
+    "port": int(os.getenv("PG_PORT", "5432")),
+    "user": os.getenv("PG_USER", "postgres"),
+    "password": os.getenv("PG_PASSWORD", "postgres"),
+    "db_name": os.getenv("PG_DB_NAME", "tender_system"),
+}
 
 # 创建目录
 for dir_path in [LOG_DIR, FILES_DIR, REPORT_DIR]:
@@ -44,18 +78,31 @@ PARSE_CONFIG = {
     'poppler_path': r'E:\标书ai匹配系统ByJohnjincaaa\a\Release-24.02.0-0\poppler-24.02.0\Library\bin'
 }
 
+# 存储与清理配置
+# 用于磁盘告警、自动清理以及定时清理设置
+STORAGE_CONFIG = {
+    "auto_cleanup_enabled": True,          # 是否启用自动清理
+    "cleanup_interval_days": 30,           # 保留最近N天的文件
+    "cleanup_schedule": "daily",           # 清理频率：daily/weekly/monthly
+    "cleanup_time": "02:00",               # 清理执行时间（24小时制 HH:MM）
+    "disk_warning_threshold": 80.0,        # 磁盘使用率告警阈值（%）
+    "disk_critical_threshold": 90.0        # 磁盘使用率严重告警阈值（%）
+}
+
 # AI配置 - 支持本地和云模型两套流程
 AI_CONFIG = {
     "provider": "dashscope",  # 默认使用DashScope
     
+    
     # 阿里云DashScope配置
     "dashscope": {
-        "api_key": "sk-8fc78116431e48599dcf498ab2aa34a0",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model_name": "qwen-plus",  # 支持长文本的模型
+        "api_key": os.getenv("DASHSCOPE_API_KEY", "sk-8bb4ea34227e44b29dcd4abba1fc372f"),
+        "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        "model_name": os.getenv("DASHSCOPE_MODEL_NAME", "qwen-flash"),  # 支持长文本的模型
         "temperature": 0.05,
         "max_tokens": 4000  # 适当的输出token限制
     },
+    
     "extract_prompt_path": os.path.join(BASE_DIR, "prompts", "extract_prompt.txt"),
     "compare_prompt_path": os.path.join(BASE_DIR, "prompts", "compare_prompt.txt"),
     "service_check_prompt_path": os.path.join(BASE_DIR, "prompts", "service_check_prompt.txt"),
@@ -190,7 +237,7 @@ B_RULE_CONFIG = {
             "rule_type": "排除类",
             "is_active": 1
         },
-         {
+        {
             "rule_name": "人员资质与经验通用判定",
             "trigger_condition": """评分标准未明确要求需通过政府官方网站（含人社、行业主管部门、人力资源和社会保障局等）备案 / 可查询验证的官方颁发文件，且涉及以下任意类别的：
                         1. 职称类：含编审、编辑相关中级 / 高级 / 副高级及以上职称，或行业对应专业技术职业资格证书；
@@ -243,41 +290,8 @@ B_RULE_CONFIG = {
             "is_active": 1
         }
 
-
-
     ],
     "rule_types": ["证书类", "业绩类", "检测报告类", "人员资质类", "排除类", "其他类", "价格类"]
-}
-
-# 数据库配置（原 PostgreSQL 配置注释/删除，替换为以下内容）
-DB_CONFIG = {
-    "db_type": "sqlite",  # 改为 sqlite
-    "db_path": os.path.join(BASE_DIR, "tender_system.db"),  # SQLite 数据库文件路径
-}
-
-# 日志配置
-LOG_CONFIG = {
-    "level": "INFO",
-    "file_name": os.path.join(LOG_DIR, "tender_system.log"),
-    "rotation": "100 MB",  # 日志轮转大小
-    "retention": "7 days",  # 日志保留时间
-}
-
-# 存储管理配置
-STORAGE_CONFIG = {
-    "auto_cleanup_enabled": True,  # 是否启用自动清理
-    "cleanup_interval_days": 30,  # 自动清理间隔（保留最近N天的文件）
-    "cleanup_schedule": "daily",  # 清理计划：daily（每天）、weekly（每周）、monthly（每月）
-    "cleanup_time": "02:00",  # 清理时间（24小时制）
-    "disk_warning_threshold": 80.0,  # 磁盘使用率警告阈值（百分比）
-    "disk_critical_threshold": 90.0,  # 磁盘使用率严重警告阈值（百分比）
-    "clean_by_status": {
-        "enabled": False,  # 是否根据项目状态清理
-        "statuses": ["已比对"],  # 要清理的项目状态
-        "keep_days": 90  # 即使状态匹配，也保留最近N天的文件
-    },
-    "report_retention_days": 90,  # 报告文件保留天数
-    "file_retention_days": 30,  # 标书文件保留天数（已比对的项目）
 }
 
 # 客观分判定配置

@@ -227,6 +227,7 @@ st.set_page_config(
 
 # 导入系统核心模块
 try:
+    import config
     from config import COMPANY_QUALIFICATIONS, TEST_CONFIG, SPIDER_CONFIG, BASE_DIR, FILES_DIR, REPORT_DIR, STORAGE_CONFIG, LOG_DIR, OBJECTIVE_SCORE_CONFIG
     from parser.file_parser import FileParser
     from ai.qualification_analyzer import AIAnalyzer
@@ -425,33 +426,49 @@ def process_session_state_actions():
                         from config import OBJECTIVE_SCORE_CONFIG
                         if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
                             # 检查是否需要根据客观分丢分阈值调整最终决策
+                            import re
+
+                            # 封装一个内部函数，统一“丢分”计算逻辑
+                            def _extract_loss_score(text: str) -> float:
+                                loss = 0.0
+                                # 1. 通过“客观分总满分 / 客观分可得分”计算
+                                total_m = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', text)
+                                gain_m = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', text)
+                                if total_m and gain_m:
+                                    try:
+                                        total_s = float(total_m.group(1))
+                                        gain_s = float(gain_m.group(1))
+                                        loss = max(total_s - gain_s, 0.0)
+                                    except ValueError:
+                                        loss = 0.0
+                                # 2. 若仍为0，再尝试匹配“丢分/失分 X 分”
+                                if loss == 0.0:
+                                    m = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', text)
+                                    if m:
+                                        try:
+                                            loss = float(m.group(1))
+                                        except ValueError:
+                                            loss = 0.0
+                                return loss
+
                             if "客观分不满分" in final_decision:
                                 # 尝试从比对结果中提取丢分信息
-                                loss_score = 0.0
-                                # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
-                                import re
-                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                                if loss_match:
-                                    loss_score = float(loss_match.group(1))
-                                
+                                loss_score = _extract_loss_score(comparison_result)
                                 threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                                 if loss_score <= threshold:
                                     # 丢分≤阈值，改为"推荐参与"
+                                    original_decision = final_decision
                                     final_decision = "推荐参与"
-                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
                             elif "推荐参与" in final_decision:
                                 # 检查是否需要根据丢分阈值改为"不推荐参与"
-                                loss_score = 0.0
-                                import re
-                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                                if loss_match:
-                                    loss_score = float(loss_match.group(1))
-                                
+                                loss_score = _extract_loss_score(comparison_result)
                                 threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                                 if loss_score > threshold:
                                     # 丢分>阈值，改为"不推荐参与"
+                                    original_decision = final_decision
                                     final_decision = "不推荐参与"
-                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
                         
                         # 4. 确保结果是中文的
                         if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
@@ -539,33 +556,46 @@ def process_session_state_actions():
                     from config import OBJECTIVE_SCORE_CONFIG
                     if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
                         # 检查是否需要根据客观分丢分阈值调整最终决策
+                        import re
+
+                        def _extract_loss_score(text: str) -> float:
+                            loss = 0.0
+                            total_m = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', text)
+                            gain_m = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', text)
+                            if total_m and gain_m:
+                                try:
+                                    total_s = float(total_m.group(1))
+                                    gain_s = float(gain_m.group(1))
+                                    loss = max(total_s - gain_s, 0.0)
+                                except ValueError:
+                                    loss = 0.0
+                            if loss == 0.0:
+                                m = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', text)
+                                if m:
+                                    try:
+                                        loss = float(m.group(1))
+                                    except ValueError:
+                                        loss = 0.0
+                            return loss
+
                         if "客观分不满分" in final_decision:
                             # 尝试从比对结果中提取丢分信息
-                            loss_score = 0.0
-                            # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
-                            import re
-                            loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                            if loss_match:
-                                loss_score = float(loss_match.group(1))
-                            
+                            loss_score = _extract_loss_score(comparison_result)
                             threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                             if loss_score <= threshold:
                                 # 丢分≤阈值，改为"推荐参与"
+                                original_decision = final_decision
                                 final_decision = "推荐参与"
-                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
                         elif "推荐参与" in final_decision:
                             # 检查是否需要根据丢分阈值改为"不推荐参与"
-                            loss_score = 0.0
-                            import re
-                            loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                            if loss_match:
-                                loss_score = float(loss_match.group(1))
-                            
+                            loss_score = _extract_loss_score(comparison_result)
                             threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                             if loss_score > threshold:
                                 # 丢分>阈值，改为"不推荐参与"
+                                original_decision = final_decision
                                 final_decision = "不推荐参与"
-                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
                     
                     # 4. 确保结果是中文的
                     if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
@@ -2816,20 +2846,30 @@ def run_ai_analysis_with_progress():
                     break
                 
                 is_service, reason = ai_analyzer.is_service_project(project.evaluation_content)
-                if is_service:
-                    log.info(f"⚠️ 项目 {project.id} 是服务类项目，删除项目：{reason}")
-                    # 删除项目（从数据库删除）
-                    from utils.db import get_db
-                    db = next(get_db())
-                    db_project = db.query(TenderProject).filter(TenderProject.id == project.id).first()
-                    if db_project:
-                        db.delete(db_project)
-                        db.commit()
-                    db.close()
-                    log.info(f"✅ 服务类项目已删除：{project.project_name}（ID：{project.id}）")
-                    continue  # 跳过后续分析
                 
-                log.info(f"项目 {project.id} 不是服务类项目，继续分析")
+                # 检查是否是因为功能被禁用而返回False
+                service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
+                
+                if is_service and service_check_enabled:
+                    # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
+                    log.info(f"⚠️ 项目 {project.id} 是服务类项目，标记为已排除：{reason}")
+                    # 更新项目状态为已排除，而不是删除，避免下次重复爬取
+                    from utils.db import get_db, update_project, ProjectStatus
+                    db = next(get_db())
+                    update_project(db, project.id, {
+                        "status": ProjectStatus.EXCLUDED,
+                        "error_msg": f"服务类项目：{reason}"
+                    })
+                    db.commit()
+                    db.close()
+                    log.info(f"✅ 服务类项目已标记为已排除：{project.project_name}（ID：{project.id}）")
+                    continue  # 跳过后续分析
+                elif is_service and not service_check_enabled:
+                    # 当服务类判断功能被禁用时，跳过判断，继续分析所有项目
+                    log.info(f"服务类判断功能已禁用，跳过判断，继续分析项目 {project.id}")
+                else:
+                    # 项目不是服务类，继续分析
+                    log.info(f"项目 {project.id} 不是服务类项目，继续分析")
                 
                 # 1. 提取资质要求
                 # 检查是否中断（在长时间操作前）
@@ -2863,8 +2903,9 @@ def run_ai_analysis_with_progress():
                         threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                         if loss_score <= threshold:
                             # 丢分≤阈值，改为"推荐参与"
+                            original_decision = final_decision
                             final_decision = "推荐参与"
-                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
                     elif "推荐参与" in final_decision:
                         # 检查是否需要根据丢分阈值改为"不推荐参与"
                         loss_score = 0.0
@@ -2876,8 +2917,9 @@ def run_ai_analysis_with_progress():
                         threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                         if loss_score > threshold:
                             # 丢分>阈值，改为"不推荐参与"
+                            original_decision = final_decision
                             final_decision = "不推荐参与"
-                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
                 
                 # 4. 确保结果是中文的，如果不是则格式化
                 if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
@@ -3203,7 +3245,7 @@ def _start_background_task(task_type, **kwargs):
             except:
                 return default
                 
-        def run_task():
+        def run_task(config=config, kwargs=kwargs):
             try:
                 from auto_run_full_process import run_full_process_cli
                 daily_limit = kwargs.get("daily_limit", SPIDER_CONFIG['daily_limit'])
@@ -3259,7 +3301,7 @@ def _start_background_task(task_type, **kwargs):
             except:
                 return default
                 
-        def run_task():
+        def run_task(config=config):
             try:
                 from parser.file_parser import FileParser
                 
@@ -3315,7 +3357,7 @@ def _start_background_task(task_type, **kwargs):
                 # 如果发生任何异常，返回默认值
                 return default
                 
-        def run_task():
+        def run_task(config=config):
             db = None
             try:
                 from ai.qualification_analyzer import AIAnalyzer
@@ -3364,15 +3406,32 @@ def _start_background_task(task_type, **kwargs):
                                         
                                         # 0. 先判断是否是服务类项目
                                         is_service, reason = analyzer.is_service_project(project.evaluation_content)
-                                        if is_service:
-                                            log.info(f"⚠️ 项目 {project.id} 是服务类项目，删除项目：{reason}")
-                                            # 删除项目（从数据库删除）
-                                            db.delete(project)
-                                            db.commit()
-                                            log.info(f"✅ 服务类项目已删除：{project.project_name}（ID：{project.id}）")
-                                            continue  # 跳过后续分析
                                         
-                                        log.info(f"项目 {project.id} 不是服务类项目，继续分析")
+                                        # 检查是否是因为功能被禁用而返回False
+                                        try:
+                                            service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
+                                        except Exception as e:
+                                            log.warning(f"访问config.AI_CONFIG失败，使用默认值：{str(e)}")
+                                            service_check_enabled = False  # 默认禁用服务类检查
+                                        
+                                        if is_service and service_check_enabled:
+                                            # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
+                                            log.info(f"⚠️ 项目 {project.id} 是服务类项目，标记为已排除：{reason}")
+                                            # 更新项目状态为已排除，而不是删除，避免下次重复爬取
+                                            from utils.db import update_project, ProjectStatus
+                                            update_project(db, project.id, {
+                                                "status": ProjectStatus.EXCLUDED,
+                                                "error_msg": f"服务类项目：{reason}"
+                                            })
+                                            db.commit()
+                                            log.info(f"✅ 服务类项目已标记为已排除：{project.project_name}（ID：{project.id}）")
+                                            continue  # 跳过后续分析
+                                        elif is_service and not service_check_enabled:
+                                            # 当服务类判断功能被禁用时，跳过判断，继续分析所有项目
+                                            log.info(f"服务类判断功能已禁用，跳过判断，继续分析项目 {project.id}")
+                                        else:
+                                            # 项目不是服务类，继续分析
+                                            log.info(f"项目 {project.id} 不是服务类项目，继续分析")
                                         
                                         # 1. 提取资质要求
                                         requirements = analyzer.extract_requirements(project.evaluation_content)
@@ -3395,8 +3454,9 @@ def _start_background_task(task_type, **kwargs):
                                                 threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                                                 if loss_score <= threshold:
                                                     # 丢分≤阈值，改为"推荐参与"
+                                                    original_decision = decision
                                                     decision = "推荐参与"
-                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
                                             elif "推荐参与" in decision:
                                                 # 检查是否需要根据丢分阈值改为"不推荐参与"
                                                 loss_score = 0.0
@@ -3408,8 +3468,9 @@ def _start_background_task(task_type, **kwargs):
                                                 threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                                                 if loss_score > threshold:
                                                     # 丢分>阈值，改为"不推荐参与"
+                                                    original_decision = decision
                                                     decision = "不推荐参与"
-                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
                                         
                                         update_project(db, project.id, {
                                             "project_requirements": requirements,
@@ -4744,17 +4805,30 @@ def run_full_process():
                             break
                         
                         is_service, reason = ai_analyzer.is_service_project(project.evaluation_content)
-                        if is_service:
-                            log.info(f"⚠️ 项目 {project.id} 是服务类项目，删除项目：{reason}")
-                            # 删除项目（从数据库删除）
+                        
+                        # 检查是否是因为功能被禁用而返回False
+                        service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
+                        
+                        if is_service and service_check_enabled:
+                            # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
+                            log.info(f"⚠️ 项目 {project.id} 是服务类项目，标记为已排除：{reason}")
+                            # 更新项目状态为已排除，而不是删除，避免下次重复爬取
+                            from utils.db import update_project, ProjectStatus
                             db_project = db.query(TenderProject).filter(TenderProject.id == project.id).first()
                             if db_project:
-                                db.delete(db_project)
+                                update_project(db, project.id, {
+                                    "status": ProjectStatus.EXCLUDED,
+                                    "error_msg": f"服务类项目：{reason}"
+                                })
                                 db.commit()
-                            log.info(f"✅ 服务类项目已删除：{project.project_name}（ID：{project.id}）")
+                            log.info(f"✅ 服务类项目已标记为已排除：{project.project_name}（ID：{project.id}）")
                             continue  # 跳过后续分析
-                        
-                        log.info(f"项目 {project.id} 不是服务类项目，继续分析")
+                        elif is_service and not service_check_enabled:
+                            # 当服务类判断功能被禁用时，跳过判断，继续分析所有项目
+                            log.info(f"服务类判断功能已禁用，跳过判断，继续分析项目 {project.id}")
+                        else:
+                            # 项目不是服务类，继续分析
+                            log.info(f"项目 {project.id} 不是服务类项目，继续分析")
                         
                         # 1. 提取资质要求
                         # 检查是否中断（在长时间操作前）
@@ -4807,8 +4881,9 @@ def run_full_process():
                                     threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                                     if loss_score <= threshold:
                                         # 丢分≤阈值，改为"推荐参与"
+                                        original_decision = final_decision
                                         final_decision = "推荐参与"
-                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
                                 elif "推荐参与" in final_decision:
                                     # 检查是否需要根据丢分阈值改为"不推荐参与"
                                     loss_score = 0.0
@@ -4820,8 +4895,9 @@ def run_full_process():
                                     threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
                                     if loss_score > threshold:
                                         # 丢分>阈值，改为"不推荐参与"
+                                        original_decision = final_decision
                                         final_decision = "不推荐参与"
-                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{final_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
                             
                             compare_elapsed = time.time() - compare_start_time
                             log.info(f"项目 {project.id} 资质比对完成，耗时 {compare_elapsed:.2f} 秒，最终判定：{final_decision}")
@@ -5217,6 +5293,21 @@ def render_result_visualization():
                 f"{filtered_unqualified / filtered_total * 100:.1f}%" if filtered_total > 0 else "0%",
                 help="筛选后项目中不可参与的数量"
             )
+        
+        # 显示失分阈值配置
+        from config import OBJECTIVE_SCORE_CONFIG
+        st.markdown("---")
+        st.subheader("⚖️ 失分阈值配置")
+        with st.container(border=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.info(f"启用状态: {'✅ 已启用' if OBJECTIVE_SCORE_CONFIG.get('enable_loss_score_adjustment', True) else '❌ 已禁用'}")
+            with col2:
+                st.info(f"失分阈值: {OBJECTIVE_SCORE_CONFIG.get('loss_score_threshold', 1.0)} 分")
+            st.markdown("**说明:**")
+            st.markdown("- 当项目失分 ≤ 阈值时，AI最终判断为：推荐参与")
+            st.markdown("- 当项目失分 > 阈值时，AI最终判断为：不推荐参与")
+            st.markdown("- AI判断为最终判断，确保推荐划分的正确性")
 
         # 匹配结果分布
         st.markdown("---")

@@ -135,21 +135,32 @@ class WindowsTaskScheduler:
             return False, "时间格式错误，请使用 HH:MM 格式（24小时制）"
         
         # 构建命令参数
-        # 创建参数文件，包含daily_limit和days_before
-        args_file = os.path.join(self.base_dir, f"task_args_{task_id}.txt")
+        # 说明：
+        # Windows 计划任务 schtasks 的 /TR 参数有 261 字符限制。
+        # 直接拼接 `cmd.exe /c "cd ... && python ... --args"` 很容易超限，
+        # 因此这里改为生成一个短的 .cmd 包装脚本，然后 /TR 只指向这个脚本。
+        tasks_dir = os.path.join(self.base_dir, "tasks")
+        os.makedirs(tasks_dir, exist_ok=True)
+
+        wrapper_cmd = os.path.join(tasks_dir, f"run_{task_id}.cmd")
+        days_before_value = days_before if days_before is not None else 0
+        days_before_arg = f" --days-before {days_before_value}" if days_before_value > 0 else ""
+
         try:
-            with open(args_file, 'w', encoding='utf-8') as f:
-                f.write(f"{daily_limit}\n{days_before if days_before is not None else 0}")
+            with open(wrapper_cmd, "w", encoding="utf-8") as f:
+                f.write("@echo off\n")
+                f.write(f'cd /d "{self.base_dir}"\n')
+                f.write(f'"{self.python_exe}" "{self.script_path}" --daily-limit {daily_limit}{days_before_arg}\n')
         except Exception as e:
-            return False, f"创建参数文件失败: {e}"
+            return False, f"创建任务执行脚本失败: {e}"
         
         # 构建schtasks命令
         # 使用 /F 强制创建（如果已存在则覆盖）
         # 注意：schtasks不支持/WD参数，需要使用cmd.exe来设置工作目录
         # 使用cmd.exe /c来执行命令，并在其中切换工作目录
         # 格式：cmd.exe /c "cd /d 工作目录 && python 脚本 参数"
-        days_before_arg = f" --days-before {days_before}" if days_before is not None and days_before > 0 else ""
-        python_cmd = f'cmd.exe /c "cd /d {self.base_dir} && "{self.python_exe}" "{self.script_path}" --daily-limit {daily_limit}{days_before_arg}"'
+        # /TR 用最短形式，避免 261 字符限制
+        python_cmd = f'cmd.exe /c ""{wrapper_cmd}""'
         cmd_args = [
             "/Create",
             "/TN", task_name,
@@ -175,7 +186,7 @@ class WindowsTaskScheduler:
                 "days_before": days_before,
                 "enabled": enabled,
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "args_file": args_file
+                "wrapper_cmd": wrapper_cmd
             }
             
             # 检查是否已存在
@@ -185,6 +196,9 @@ class WindowsTaskScheduler:
             
             return True, f"定时任务创建成功：{task_name}"
         else:
+            # 常见问题：/TR 参数超长（261字符限制）
+            if "TR" in output and "261" in output:
+                return False, f"创建定时任务失败：{output}\n\n建议：已自动采用 .cmd 包装脚本以缩短 /TR，但仍超长时请将项目目录移动到更短路径（如 D:\\tender\\）后重试。"
             return False, f"创建定时任务失败：{output}"
     
     def list_tasks(self) -> List[Dict]:

@@ -27,6 +27,7 @@ logger.info(f"📝 自动运行日志文件: {auto_run_log_file}")
 
 # 导入项目模块
 try:
+    import config
     from config import SPIDER_CONFIG, TEST_CONFIG
     from spider import SpiderManager
     from parser.file_parser import FileParser
@@ -173,19 +174,35 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                             
                             # 0. 先判断是否是服务类项目
                             is_service, reason = analyzer.is_service_project(project.evaluation_content)
-                            if is_service:
-                                logger.info(f"⚠️ 项目 {project.id} 是服务类项目，删除项目：{reason}")
-                                # 删除项目（从数据库删除）
-                                db.delete(project)
-                                db.commit()
-                                logger.info(f"✅ 服务类项目已删除：{project.project_name}（ID：{project.id}）")
-                                continue  # 跳过后续分析
                             
-                            logger.info(f"项目 {project.id} 不是服务类项目，继续分析")
+                            # 检查是否是因为功能被禁用而返回False
+                            try:
+                                service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
+                                enable_keyword_check = config.AI_CONFIG.get("qualification_keyword_check", {}).get("enable", False)
+                            except Exception as e:
+                                logger.warning(f"访问config.AI_CONFIG失败，使用默认值：{str(e)}")
+                                service_check_enabled = False  # 默认禁用服务类检查
+                                enable_keyword_check = False  # 默认禁用关键词检查
+                            
+                            if is_service and service_check_enabled:
+                                # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
+                                logger.info(f"⚠️ 项目 {project.id} 是服务类项目，标记为已排除：{reason}")
+                                # 更新项目状态为已排除，而不是删除，避免下次重复爬取
+                                update_project(db, project.id, {
+                                    "status": ProjectStatus.EXCLUDED,
+                                    "error_msg": f"服务类项目：{reason}"
+                                })
+                                db.commit()
+                                logger.info(f"✅ 服务类项目已标记为已排除：{project.project_name}（ID：{project.id}）")
+                                continue  # 跳过后续分析
+                            elif is_service and not service_check_enabled:
+                                # 当服务类判断功能被禁用时，跳过判断，继续分析所有项目
+                                logger.info(f"服务类判断功能已禁用，跳过判断，继续分析项目 {project.id}")
+                            else:
+                                # 项目不是服务类，继续分析
+                                logger.info(f"项目 {project.id} 不是服务类项目，继续分析")
                             
                             # 检查项目是否包含资质相关关键词（如果包含则删除，避免不必要的分析）
-                            from config import AI_CONFIG
-                            enable_keyword_check = AI_CONFIG.get("qualification_keyword_check", {}).get("enable", False)
                             
                             has_qualification_keywords = False
                             matched_keywords = []
@@ -200,11 +217,14 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                                 
                                 if has_qualification_keywords:
                                     reason = f"项目包含资质相关关键词：{', '.join(matched_keywords)}"
-                                    logger.info(f"⚠️ 项目 {project.id} 包含资质关键词，删除项目：{reason}")
-                                    # 删除项目（从数据库删除）
-                                    db.delete(project)
+                                    logger.info(f"⚠️ 项目 {project.id} 包含资质关键词，标记为已排除：{reason}")
+                                    # 更新项目状态为已排除，而不是删除，避免下次重复爬取
+                                    update_project(db, project.id, {
+                                        "status": ProjectStatus.EXCLUDED,
+                                        "error_msg": f"含资质关键词：{reason}"
+                                    })
                                     db.commit()
-                                    logger.info(f"✅ 含资质关键词项目已删除：{project.project_name}（ID：{project.id}）")
+                                    logger.info(f"✅ 含资质关键词项目已标记为已排除：{project.project_name}（ID：{project.id}）")
                                     continue  # 跳过后续分析
                                 
                                 logger.info(f"项目 {project.id} 不包含资质关键词，继续分析")
@@ -217,7 +237,56 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                             # 2. 比对资质（与流程控制保持一致，使用AI进行详细比对）
                             comparison_result, final_decision = analyzer.compare_qualifications(project_requirements)
                             
-                            # 3. 更新项目状态（与流程控制保持一致）
+                            # 3. 根据丢分阈值调整最终决策（与流程控制保持一致）
+                            from config import OBJECTIVE_SCORE_CONFIG
+                            import re
+
+                            def _extract_loss_score(text: str) -> float:
+                                loss = 0.0
+                                # 优先通过“客观分总满分 / 客观分可得分”计算丢分
+                                total_m = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', text)
+                                gain_m = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', text)
+                                if total_m and gain_m:
+                                    try:
+                                        total_s = float(total_m.group(1))
+                                        gain_s = float(gain_m.group(1))
+                                        loss = max(total_s - gain_s, 0.0)
+                                    except ValueError:
+                                        loss = 0.0
+                                # 如果仍为0，再尝试匹配“丢分/失分 X 分”
+                                if loss == 0.0:
+                                    m = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', text)
+                                    if m:
+                                        try:
+                                            loss = float(m.group(1))
+                                        except ValueError:
+                                            loss = 0.0
+                                return loss
+
+                            if "客观分不满分" in final_decision:
+                                # 检查是否需要根据丢分阈值改为"推荐参与"
+                                loss_score = _extract_loss_score(comparison_result)
+                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                if loss_score <= threshold:
+                                    # 丢分≤阈值，改为"推荐参与"
+                                    original_decision = final_decision
+                                    final_decision = "推荐参与"
+                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
+                            elif "推荐参与" in final_decision:
+                                # 检查是否需要根据丢分阈值改为"不推荐参与"
+                                loss_score = _extract_loss_score(comparison_result)
+                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                                if loss_score > threshold:
+                                    # 丢分>阈值，改为"不推荐参与"
+                                    original_decision = final_decision
+                                    final_decision = "不推荐参与"
+                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
+                            
+                            # 4. 确保结果是中文的
+                            if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
+                                comparison_result = f"资质比对结果：{comparison_result}\n\n（注：以上为AI原始输出，已转换为中文显示）"
+                            
+                            # 5. 更新项目状态（与流程控制保持一致）
                             update_project(db, project.id, {
                                 "project_requirements": project_requirements,
                                 "ai_extracted_text": project_requirements,  # 保存AI提取的原始文本

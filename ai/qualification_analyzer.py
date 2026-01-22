@@ -708,6 +708,17 @@ class AIAnalyzer:
             if hasattr(self, 'rate_limiter') and self.rate_limiter:
                 self.rate_limiter.wait_for_rate_limit()
             
+            # 限制内容长度，避免超出AI模型的输入长度限制
+            # 从全局配置中读取可配置的最大长度，便于在模型支持长文本时关闭或放宽截断
+            try:
+                from config import AI_CONFIG  # 延迟导入避免循环依赖
+                max_input_length = AI_CONFIG.get("preprocessing", {}).get("max_text_length", 30000)
+            except Exception:
+                max_input_length = 30000  # 回退到安全默认值
+            if len(content) > max_input_length:
+                log.warning(f"输入内容过长（{len(content)}字符），将截断为{max_input_length}字符")
+                content = content[:max_input_length]
+            
             # 使用当前服务执行提取
             return self._execute_with_fallback(
                 self.current_service.extract_requirements,
@@ -726,6 +737,16 @@ class AIAnalyzer:
             # 检查请求频率限制
             if self.rate_limiter:
                 self.rate_limiter.wait_for_rate_limit()
+            
+            # 限制内容长度，避免超出AI模型的输入长度限制
+            try:
+                from config import AI_CONFIG  # 延迟导入避免循环依赖
+                max_input_length = AI_CONFIG.get("preprocessing", {}).get("max_text_length", 30000)
+            except Exception:
+                max_input_length = 30000
+            if len(content) > max_input_length:
+                log.warning(f"输入内容过长（{len(content)}字符），将截断为{max_input_length}字符")
+                content = content[:max_input_length]
             
             # 使用当前服务执行提取
             result = self._execute_with_fallback(
@@ -766,22 +787,124 @@ class AIAnalyzer:
             if not company_qual_str:
                 company_qual_str = self._format_company_qualifications()
             
-            # 使用当前服务执行比较
-            result = self._execute_with_fallback(
-                self.current_service.compare_qualifications,
-                project_requirements,
-                company_qual_str
-            )
+            # 限制内容长度，避免超出AI模型的输入长度限制
+            try:
+                from config import AI_CONFIG  # 延迟导入避免循环依赖
+                max_input_length = AI_CONFIG.get("preprocessing", {}).get("max_text_length", 30000)
+            except Exception:
+                max_input_length = 30000
+
+            # 单个输入参数的最大长度，默认取总长度的一半，避免某一端被截断过多
+            max_single_input_length = max_input_length // 2
+            
+            # 对每个输入参数单独进行截断
+            if len(project_requirements) > max_single_input_length:
+                log.warning(f"项目要求过长（{len(project_requirements)}字符），将截断为{max_single_input_length}字符")
+                project_requirements = project_requirements[:max_single_input_length]
+            
+            if len(company_qual_str) > max_single_input_length:
+                log.warning(f"公司资质过长（{len(company_qual_str)}字符），将截断为{max_single_input_length}字符")
+                company_qual_str = company_qual_str[:max_single_input_length]
+            
+            # 计算总长度
+            total_length = len(project_requirements) + len(company_qual_str)
+            
+            if total_length > max_input_length:
+                # 如果总长度超出限制，优先保留公司资质，截断项目要求
+                project_max_length = max_input_length - len(company_qual_str)
+                if project_max_length > 0:
+                    log.warning(f"输入内容过长（总长度 {total_length} 字符），将进一步截断项目要求为 {project_max_length} 字符")
+                    project_requirements = project_requirements[:project_max_length]
+                else:
+                    # 如果公司资质本身就超出了限制，也需要截断
+                    company_qual_str = company_qual_str[:max_input_length // 2]
+                    project_requirements = project_requirements[:max_input_length // 2]
+                    log.warning(f"输入内容过长（总长度 {total_length} 字符），将截断公司资质和项目要求各为 {max_input_length // 2} 字符")
+            
+            # 使用当前服务执行比较，添加输入长度错误的处理
+            try:
+                result = self._execute_with_fallback(
+                    self.current_service.compare_qualifications,
+                    project_requirements,
+                    company_qual_str
+                )
+            except Exception as e:
+                error_msg = str(e)
+                if "input length" in error_msg.lower() or "length" in error_msg.lower():
+                    # 如果是输入长度错误，进行更严格的截断并重试
+                    log.warning(f"AI服务返回输入长度错误，进行更严格的截断：{error_msg[:100]}")
+                    
+                    # 进一步减少输入长度
+                    stricter_max_length = 20000
+                    if len(project_requirements) > stricter_max_length:
+                        log.warning(f"项目要求过长，将进一步截断为{stricter_max_length}字符")
+                        project_requirements = project_requirements[:stricter_max_length]
+                    
+                    if len(company_qual_str) > stricter_max_length:
+                        log.warning(f"公司资质过长，将进一步截断为{stricter_max_length}字符")
+                        company_qual_str = company_qual_str[:stricter_max_length]
+                    
+                    # 再次尝试执行比较
+                    log.info("使用截断后的输入重试AI服务调用")
+                    result = self._execute_with_fallback(
+                        self.current_service.compare_qualifications,
+                        project_requirements,
+                        company_qual_str
+                    )
+                else:
+                    # 其他错误，直接抛出
+                    raise
             
             log.info("项目要求与公司资质比较完成")
             
             # 确保返回二元组 (comparison_result, final_decision)
             if isinstance(result, tuple) and len(result) == 2:
                 # 如果已经是二元组，直接返回
-                return result
+                comparison_result, final_decision = result
             else:
                 # 如果不是二元组，将其作为比较结果，设置默认决策
-                return result, "通过"  # 默认决策为通过
+                comparison_result = result
+                final_decision = "通过"  # 默认决策为通过
+            
+            # 应用失分阈值调整，确保AI判断为最终判断
+            from config import OBJECTIVE_SCORE_CONFIG
+            if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
+                # 优先从“客观分总满分 / 客观分可得分”中计算丢分；找不到时再尝试正则匹配“丢分/失分”
+                loss_score = 0.0
+                import re
+
+                # 1. 通过总分和得分计算丢分
+                total_match = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', comparison_result)
+                gain_match = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', comparison_result)
+                if total_match and gain_match:
+                    try:
+                        total_score = float(total_match.group(1))
+                        gain_score = float(gain_match.group(1))
+                        loss_score = max(total_score - gain_score, 0.0)
+                    except ValueError:
+                        loss_score = 0.0
+
+                # 2. 如果上面未算出丢分，再尝试匹配“丢分/失分 X 分”模式
+                if loss_score == 0.0:
+                    loss_match = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', comparison_result)
+                    if loss_match:
+                        try:
+                            loss_score = float(loss_match.group(1))
+                        except ValueError:
+                            loss_score = 0.0
+
+                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
+                if loss_score <= threshold:
+                    # 丢分≤阈值，改为"推荐参与"
+                    final_decision = "推荐参与"
+                    comparison_result += f"\n\n【AI最终判断说明】\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 最终判断：推荐参与"
+                else:
+                    # 丢分>阈值，改为"不推荐参与"
+                    final_decision = "不推荐参与"
+                    comparison_result += f"\n\n【AI最终判断说明】\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 最终判断：不推荐参与"
+            
+            log.info(f"AI最终判断：{final_decision}")
+            return comparison_result, final_decision
         except Exception as e:
             log.error(f"比较项目要求与公司资质失败: {str(e)}")
             raise
