@@ -1,51 +1,72 @@
-from celery import Celery
-from celery.schedules import crontab
 import os
 from utils.log import log  # 新增：导入日志实例（之前缺失导致 NameError）
 from utils.db import save_project, ProjectStatus, get_db  # 新增：导入 get_db
-# 初始化 Celery
-app = Celery(
-    "tender_system",
-    broker="redis://localhost:6379/0",  # 若未安装 Redis，可先注释（仅测试单模块）
-    backend="redis://localhost:6379/0",
-    include=[
-        "spider.tender_spider",
-        "parser.file_parser",
-        "ai.qualification_analyzer",
-        "report.report_generator"
-    ]
-)
 
-# 配置 Celery
-app.conf.update(
-    result_expires=3600,  # 结果过期时间（1小时）
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    timezone="Asia/Shanghai",
-    enable_utc=True,
-)
+# 可选导入 Celery
+try:
+    from celery import Celery
+    from celery.schedules import crontab
+    CELERY_AVAILABLE = True
+    
+    # 初始化 Celery
+    app = Celery(
+        "tender_system",
+        broker="redis://localhost:6379/0",  # 若未安装 Redis，可先注释（仅测试单模块）
+        backend="redis://localhost:6379/0",
+        include=[
+            "spider.tender_spider",
+            "parser.file_parser",
+            "ai.qualification_analyzer",
+            "report.report_generator"
+        ]
+    )
 
-# 定义定时任务（每天凌晨2点执行）
-# 测试模式：设置 test_mode=True 和 daily_limit=2 来限制爬取数量
-# 示例：("local", True, 2) 表示 (model_type="local", test_mode=True, daily_limit=2)
-# 注意：test_mode=True 时会自动将 daily_limit 设为 2，即使传入了其他值
-app.conf.beat_schedule = {
-    "daily-tender-task": {
-        "task": "tasks.scheduler.run_daily_task",
-        "schedule": crontab(hour=2, minute=0),
-        "args": (),  # 测试模式示例：("local", True, 2) 或 (None, True, None)
-    },
-}
+    # 配置 Celery
+    app.conf.update(
+        result_expires=3600,  # 结果过期时间（1小时）
+        task_serializer="json",
+        result_serializer="json",
+        accept_content=["json"],
+        timezone="Asia/Shanghai",
+        enable_utc=True,
+    )
 
-@app.task
-def run_daily_task(model_type=None, test_mode=False, daily_limit=None):
+    # 定义定时任务（每天凌晨2点执行）
+    # 测试模式：设置 test_mode=True 和 daily_limit=2 来限制爬取数量
+    # 示例：("local", True, 2) 表示 (model_type="local", test_mode=True, daily_limit=2)
+    # 注意：test_mode=True 时会自动将 daily_limit 设为 2，即使传入了其他值
+    app.conf.beat_schedule = {
+        "daily-tender-task": {
+            "task": "tasks.scheduler.run_daily_task",
+            "schedule": crontab(hour=2, minute=0),
+            "args": (),  # 测试模式示例：("local", True, 2) 或 (None, True, None)
+        },
+    }
+    
+    # 定义带装饰器的任务函数
+    @app.task
+    def run_daily_task(model_type=None, test_mode=False, daily_limit=None, enabled_platforms=None, total_limit=None, days_before=None):
+        return _run_daily_task(model_type, test_mode, daily_limit, enabled_platforms, total_limit, days_before)
+        
+except ImportError:
+    CELERY_AVAILABLE = False
+    log.warning("未安装 Celery，定时任务调度功能不可用，但核心功能仍可通过直接调用使用")
+    
+    # 定义直接调用的函数
+    def run_daily_task(model_type=None, test_mode=False, daily_limit=None, enabled_platforms=None, total_limit=None, days_before=None):
+        return _run_daily_task(model_type, test_mode, daily_limit, enabled_platforms, total_limit, days_before)
+
+# 核心任务函数
+def _run_daily_task(model_type=None, test_mode=False, daily_limit=None, enabled_platforms=None, total_limit=None, days_before=None):
     """每日任务主流程（适配本地文件测试）
     
     Args:
         model_type: AI模型类型（'local' 或 'cloud'）
         test_mode: 是否为测试模式（True时只爬取2个文件）
         daily_limit: 爬取数量限制（None时使用config中的默认值，test_mode=True时自动设为2）
+        enabled_platforms: 启用的平台列表（None表示全部启用）
+        total_limit: 总爬取数量限制（None表示不限制）
+        days_before: 时间间隔，爬取最近N天内的文件（None表示只爬取当日）
     """
     log.info("="*50)
     log.info("开始执行每日标书资质匹配任务")
@@ -73,7 +94,7 @@ def run_daily_task(model_type=None, test_mode=False, daily_limit=None):
                 # 构造项目数据（模拟爬虫爬取的结果）
                 file_name = os.path.basename(file_path)
                 project_name = file_name.split(".")[0]  # 从文件名提取项目名称
-                file_format = file_name.split(".")[-1].lower()  # 提取文件格式
+                file_format = file_name.split(".")[1].lower()  # 提取文件格式
 
                 project_data = {
                     "project_name": project_name,
@@ -98,22 +119,39 @@ def run_daily_task(model_type=None, test_mode=False, daily_limit=None):
                 log.warning("未找到有效本地测试文件，任务终止")
                 return
         else:
-            # 正常模式：执行爬虫（保留原有逻辑）
-            from spider.tender_spider import run_all_spiders, ZheJiangTenderSpider
+            # 正常模式：执行爬虫（使用SpiderManager）
+            from spider.spider_manager import SpiderManager
             
             log.info("第一步：开始爬取项目")
             
             # 测试运行：只爬取2个文件
             if test_mode:
                 log.info("⚠️ 测试模式：限制爬取数量为2个文件")
-                spider = ZheJiangTenderSpider(daily_limit=2)
-                all_projects = spider.run()
+                all_projects = SpiderManager.run_all_spiders(
+                    days_before=days_before,
+                    enabled_platforms=enabled_platforms,
+                    total_limit=2
+                )
             elif daily_limit is not None:
                 log.info(f"📊 使用指定的爬取数量限制：{daily_limit}")
-                spider = ZheJiangTenderSpider(daily_limit=daily_limit)
-                all_projects = spider.run()
+                all_projects = SpiderManager.run_all_spiders(
+                    days_before=days_before,
+                    enabled_platforms=enabled_platforms,
+                    total_limit=daily_limit
+                )
+            elif total_limit is not None:
+                log.info(f"📊 使用总爬取数量限制：{total_limit}")
+                all_projects = SpiderManager.run_all_spiders(
+                    days_before=days_before,
+                    enabled_platforms=enabled_platforms,
+                    total_limit=total_limit
+                )
             else:
-                all_projects = run_all_spiders()
+                all_projects = SpiderManager.run_all_spiders(
+                    days_before=days_before,
+                    enabled_platforms=enabled_platforms,
+                    total_limit=total_limit
+                )
             
             if len(all_projects) == 0:
                 log.info("未爬取到有效项目，跳过后续步骤")
@@ -138,8 +176,16 @@ def run_daily_task(model_type=None, test_mode=False, daily_limit=None):
         generator.generate_report()
 
         log.info("="*50)
-        log.info("每日标书资质匹配任务（本地测试模式）执行完成")
+        log.info("每日标书资质匹配任务执行完成")
         log.info("="*50)
     except Exception as e:
         log.error(f"每日任务执行失败：{str(e)}", exc_info=True)
         raise
+
+# 导出核心函数
+def run_daily_task_direct(*args, **kwargs):
+    """直接运行每日任务（不通过Celery）
+    
+    当Celery不可用时，可使用此函数直接运行任务
+    """
+    return _run_daily_task(*args, **kwargs)

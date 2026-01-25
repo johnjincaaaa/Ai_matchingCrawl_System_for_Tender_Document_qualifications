@@ -98,7 +98,7 @@ AI_CONFIG = {
     "dashscope": {
         "api_key": os.getenv("DASHSCOPE_API_KEY", "sk-8bb4ea34227e44b29dcd4abba1fc372f"),
         "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        "model_name": os.getenv("DASHSCOPE_MODEL_NAME", "qwen-flash"),  # 支持长文本的模型
+        "model_name": os.getenv("DASHSCOPE_MODEL_NAME", "qwen3-coder-plus"),  # 支持长文本的模型
         "temperature": 0.05,
         "max_tokens": 4000  # 适当的输出token限制
     },

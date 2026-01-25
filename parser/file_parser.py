@@ -13,6 +13,12 @@ import platform
 import threading
 from functools import wraps
 
+# 新增：用于处理rar文件和xlsx文件
+import patoolib
+from pyunpack import Archive
+import openpyxl
+import xlrd
+
 # Windows和Unix系统的文件锁模块（可选导入）
 try:
     import msvcrt  # Windows文件锁
@@ -59,8 +65,8 @@ class FileParser:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.supported_formats = ['pdf', 'docx', 'doc', 'docm', 'txt']  # 支持DOCM格式
-        self.archive_formats = ['zip']
+        self.supported_formats = ['pdf', 'docx', 'doc', 'docm', 'txt', 'xlsx', 'xls']  # 支持DOCM格式和Excel文件
+        self.archive_formats = ['zip', 'rar']  # 支持zip和rar文件
         # 关键词列表，用于筛选招标文件
         self.tender_keywords = ['招标', '标书', '投标', '采购', '竞争性谈判', '询价', '磋商', '比选', '资格预审']
         # 性能配置
@@ -321,71 +327,100 @@ class FileParser:
         
         return False
 
-    def _extract_zip(self, zip_path):
-        """解压zip文件并返回相关文件路径列表（改进版：更好的错误处理和文件识别）"""
+    def _extract_zip(self, archive_path):
+        """解压压缩文件（zip或rar）并返回相关文件路径列表（改进版：更好的错误处理和文件识别）"""
         try:
-            extract_dir = os.path.splitext(zip_path)[0]  # 使用zip文件同名目录解压
+            extract_dir = os.path.splitext(archive_path)[0]  # 使用压缩文件同名目录解压
             os.makedirs(extract_dir, exist_ok=True)
             
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                all_files = zip_ref.namelist()
-                tender_files = []
-                supported_files = []  # 支持格式的文件（即使不包含关键词）
-                
-                for file in all_files:
-                    file_name = os.path.basename(file)
-                    # 跳过隐藏文件和目录
-                    if file_name.startswith('.') or file.endswith('/'):
-                        continue
+            file_ext = Path(archive_path).suffix.lower().lstrip('.')
+            all_files = []
+            
+            if file_ext == 'zip':
+                # 处理zip文件
+                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                    all_files = zip_ref.namelist()
                     
-                    # 解压文件
-                    try:
-                        zip_ref.extract(file, extract_dir)
-                        # 处理路径：如果ZIP中有子目录，需要正确拼接路径
-                        extracted_path = os.path.join(extract_dir, file)
-                        # 标准化路径，处理Windows路径分隔符问题
-                        extracted_path = os.path.normpath(extracted_path)
+                    for file in all_files:
+                        file_name = os.path.basename(file)
+                        # 跳过隐藏文件和目录
+                        if file_name.startswith('.') or file.endswith('/'):
+                            continue
                         
-                        # 确保文件存在
-                        if not os.path.exists(extracted_path):
-                            # 尝试使用绝对路径
-                            extracted_path = os.path.abspath(extracted_path)
-                            if not os.path.exists(extracted_path):
-                                self.logger.warning(f"解压后文件不存在: {extracted_path}")
-                                # 尝试查找文件（可能路径编码问题）
-                                file_name_only = os.path.basename(file)
-                                for root, dirs, files in os.walk(extract_dir):
-                                    if file_name_only in files:
-                                        extracted_path = os.path.join(root, file_name_only)
-                                        self.logger.info(f"找到文件（使用搜索）: {extracted_path}")
-                                        break
-                                else:
-                                    continue
-                        
-                        # 判断是否为招标文件
-                        if self._is_tender_file(file_name):
-                            tender_files.append(extracted_path)
-                            self.logger.info(f"从zip中提取并识别为招标文件：{extracted_path}")
+                        # 解压文件
+                        try:
+                            zip_ref.extract(file, extract_dir)
+                        except Exception as e:
+                            self.logger.error(f"解压zip文件失败 {file}: {str(e)}")
+                            continue
+            elif file_ext == 'rar':
+                # 处理rar文件
+                try:
+                    from pyunpack import Archive
+                    Archive(archive_path).extractall(extract_dir)
+                    # 获取解压后的所有文件
+                    for root, dirs, files in os.walk(extract_dir):
+                        for file in files:
+                            rel_path = os.path.relpath(os.path.join(root, file), extract_dir)
+                            all_files.append(rel_path)
+                except Exception as e:
+                    self.logger.error(f"解压rar文件失败 {archive_path}：{str(e)}")
+                    import traceback
+                    self.logger.error(traceback.format_exc())
+                    return []
+            
+            # 收集招标文件
+            tender_files = []
+            supported_files = []  # 支持格式的文件（即使不包含关键词）
+            
+            for file in all_files:
+                file_name = os.path.basename(file)
+                # 跳过隐藏文件和目录
+                if file_name.startswith('.') or file.endswith('/'):
+                    continue
+                
+                # 处理路径：如果压缩文件中有子目录，需要正确拼接路径
+                extracted_path = os.path.join(extract_dir, file)
+                # 标准化路径，处理Windows路径分隔符问题
+                extracted_path = os.path.normpath(extracted_path)
+                
+                # 确保文件存在
+                if not os.path.exists(extracted_path):
+                    # 尝试使用绝对路径
+                    extracted_path = os.path.abspath(extracted_path)
+                    if not os.path.exists(extracted_path):
+                        self.logger.warning(f"解压后文件不存在: {extracted_path}")
+                        # 尝试查找文件（可能路径编码问题）
+                        file_name_only = os.path.basename(file)
+                        for root, dirs, files in os.walk(extract_dir):
+                            if file_name_only in files:
+                                extracted_path = os.path.join(root, file_name_only)
+                                self.logger.info(f"找到文件（使用搜索）: {extracted_path}")
+                                break
                         else:
-                            # 即使不包含关键词，如果是支持的格式，也记录
-                            file_ext = os.path.splitext(file_name)[1].lower().lstrip('.')
-                            if file_ext in self.supported_formats:
-                                supported_files.append(extracted_path)
-                                self.logger.info(f"从zip中提取文件（格式支持）：{extracted_path}")
-                            else:
-                                self.logger.info(f"从zip中提取但不参与分析：{extracted_path}")
-                    except Exception as e:
-                        self.logger.error(f"解压文件失败 {file}: {str(e)}")
-                        continue
+                            continue
                 
-                # 如果没有找到明确的招标文件，但ZIP中有支持格式的文件，返回所有支持格式的文件
-                if not tender_files and supported_files:
-                    self.logger.warning(f"ZIP中未找到明确的招标文件，尝试解析所有支持格式的文件（{len(supported_files)}个）")
-                    return supported_files
-                
-                return tender_files
+                # 判断是否为招标文件
+                if self._is_tender_file(file_name):
+                    tender_files.append(extracted_path)
+                    self.logger.info(f"从{file_ext}中提取并识别为招标文件：{extracted_path}")
+                else:
+                    # 即使不包含关键词，如果是支持的格式，也记录
+                    file_ext_inner = os.path.splitext(file_name)[1].lower().lstrip('.')
+                    if file_ext_inner in self.supported_formats:
+                        supported_files.append(extracted_path)
+                        self.logger.info(f"从{file_ext}中提取文件（格式支持）：{extracted_path}")
+                    else:
+                        self.logger.info(f"从{file_ext}中提取但不参与分析：{extracted_path}")
+            
+            # 如果没有找到明确的招标文件，但压缩文件中有支持格式的文件，返回所有支持格式的文件
+            if not tender_files and supported_files:
+                self.logger.warning(f"{file_ext}中未找到明确的招标文件，尝试解析所有支持格式的文件（{len(supported_files)}个）")
+                return supported_files
+            
+            return tender_files
         except Exception as e:
-            self.logger.error(f"解压zip文件失败 {zip_path}：{str(e)}")
+            self.logger.error(f"解压压缩文件失败 {archive_path}：{str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
             return []
@@ -437,10 +472,18 @@ class FileParser:
                     if not os.path.exists(tender_file):
                         self.logger.error(f"ZIP中的文件不存在: {tender_file}")
                         continue
+                    # 检查文件大小
+                    if os.path.getsize(tender_file) < 100:
+                        self.logger.warning(f"ZIP中的文件过小（{os.path.getsize(tender_file)}字节）: {tender_file}")
+                        continue
                     file_content = self.parse_file(tender_file, project_id)
                     if file_content:
-                        all_content.append(file_content)
-                        self.logger.info(f"ZIP文件解析成功: {tender_file}, 内容长度: {len(file_content)} 字符")
+                        # 检查解析内容是否为空
+                        if file_content.strip():
+                            all_content.append(file_content)
+                            self.logger.info(f"ZIP文件解析成功: {tender_file}, 内容长度: {len(file_content)} 字符")
+                        else:
+                            self.logger.warning(f"ZIP文件解析后内容为空: {tender_file}")
                     else:
                         self.logger.warning(f"ZIP文件解析失败（返回None）: {tender_file}")
                 
@@ -485,16 +528,39 @@ class FileParser:
                 self.logger.warning(f"不支持的文件格式：{file_ext}")
                 return None
 
-            # 5. 根据格式解析
+            # 5. 检查文件大小
+            file_size = os.path.getsize(file_path)
+            if file_size < 100:
+                self.logger.warning(f"文件过小（{file_size}字节），可能为空或损坏: {file_path}")
+                # 对于小文件，尝试解析，但添加警告
+
+            # 6. 根据格式解析
             if file_ext == 'pdf':
-                return self._parse_pdf(file_path)
+                result = self._parse_pdf(file_path)
             elif file_ext == 'docx' or file_ext == 'docm':
                 # DOCM是启用宏的Word文档，尝试用_parse_docx解析（内部会处理）
-                return self._parse_docx(file_path)
+                result = self._parse_docx(file_path)
             elif file_ext == 'doc':
-                return self._parse_doc(file_path)
+                result = self._parse_doc(file_path)
             elif file_ext == 'txt':
-                return self._parse_txt(file_path)
+                result = self._parse_txt(file_path)
+            elif file_ext == 'xlsx' or file_ext == 'xls':
+                result = self._parse_excel(file_path)
+            else:
+                self.logger.warning(f"不支持的文件格式：{file_ext}")
+                result = None
+
+            # 7. 检查解析结果
+            if result:
+                if result.strip():
+                    self.logger.info(f"文件解析成功，内容长度: {len(result)} 字符")
+                    return result
+                else:
+                    self.logger.warning(f"文件解析后内容为空: {file_path}")
+                    return None
+            else:
+                self.logger.warning(f"文件解析失败（返回None）: {file_path}")
+                return None
 
         except Exception as e:
             self.logger.error(f"解析文件失败 {file_path}：{str(e)}", exc_info=True)
@@ -1338,6 +1404,20 @@ class FileParser:
                 self.logger.error(f"文件大小为0：{file_path}")
                 return None
             
+            # 检查文件大小是否过小
+            if file_size < 100:
+                self.logger.warning(f"文件过小（{file_size}字节），可能为空或损坏: {file_path}")
+                # 检查文件头
+                try:
+                    with open(file_path, 'rb') as f:
+                        header = f.read(8)
+                        if header[:2] != b'PK':  # ZIP文件头
+                            self.logger.error(f"文件不是有效的DOCX格式（缺少ZIP文件头）: {file_path}")
+                            return None
+                except Exception as e:
+                    self.logger.warning(f"检查文件头失败：{str(e)}")
+                    return None
+            
             # 尝试打开文档
             try:
                 doc = Document(file_path)
@@ -1349,7 +1429,12 @@ class FileParser:
                     self.logger.info("尝试使用Word COM组件转换为DOCX...")
                     # 如果是DOCM，尝试使用Word COM转换为DOCX
                     if self._word_com_available:
-                        return self._convert_docm_to_docx(file_path)
+                        result = self._convert_docm_to_docx(file_path)
+                        if result and result.strip():
+                            return result
+                        else:
+                            self.logger.warning(f"DOCM转换后内容为空: {file_path}")
+                            return None
                     else:
                         # 使用WARNING级别，因为这是已知的、预期的错误（已在初始化时记录过详细信息）
                         self.logger.warning(f"⚠️ Word COM组件不可用，无法解析DOCM文件：{os.path.basename(file_path)}")
@@ -1458,7 +1543,12 @@ class FileParser:
             if 'macroEnabled' in error_msg or 'application/vnd.ms-word.document.macroEnabled' in error_msg:
                 self.logger.warning(f"文件是DOCM格式，尝试使用Word COM组件转换：{file_path}")
                 if self._word_com_available:
-                    return self._convert_docm_to_docx(file_path)
+                    result = self._convert_docm_to_docx(file_path)
+                    if result and result.strip():
+                        return result
+                    else:
+                        self.logger.warning(f"DOCM转换后内容为空: {file_path}")
+                        return None
                 else:
                     self.logger.error("Word COM组件不可用，无法解析DOCM文件")
                     return None
@@ -1689,6 +1779,77 @@ class FileParser:
                 return f.read().strip()
         except Exception as e:
             self.logger.error(f"TXT解析失败：{str(e)}")
+            return None
+
+    def _parse_excel(self, file_path):
+        """解析Excel文件（.xlsx和.xls格式）"""
+        try:
+            self.logger.info(f"开始解析Excel文件：{file_path}")
+            content = []
+            
+            # 检查文件扩展名
+            file_ext = Path(file_path).suffix.lower().lstrip('.')
+            
+            if file_ext == 'xlsx':
+                # 使用openpyxl解析xlsx文件
+                from openpyxl import load_workbook
+                wb = load_workbook(file_path, data_only=True)
+                
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    sheet_content = []
+                    sheet_content.append(f"=== 工作表：{sheet_name} ===")
+                    
+                    # 读取所有行
+                    for row in ws.iter_rows(values_only=True):
+                        # 过滤空行
+                        if any(cell is not None for cell in row):
+                            # 将单元格转换为字符串
+                            row_str = '\t'.join([str(cell) if cell is not None else '' for cell in row])
+                            sheet_content.append(row_str)
+                    
+                    if len(sheet_content) > 1:  # 跳过空工作表
+                        content.extend(sheet_content)
+                        content.append('')  # 工作表之间添加空行
+                
+                wb.close()
+            elif file_ext == 'xls':
+                # 使用xlrd解析xls文件
+                import xlrd
+                wb = xlrd.open_workbook(file_path)
+                
+                for sheet_index in range(wb.nsheets):
+                    ws = wb.sheet_by_index(sheet_index)
+                    sheet_name = ws.name
+                    sheet_content = []
+                    sheet_content.append(f"=== 工作表：{sheet_name} ===")
+                    
+                    # 读取所有行
+                    for row_index in range(ws.nrows):
+                        row = ws.row_values(row_index)
+                        # 过滤空行
+                        if any(cell is not None and cell != '' for cell in row):
+                            # 将单元格转换为字符串
+                            row_str = '\t'.join([str(cell) if cell is not None else '' for cell in row])
+                            sheet_content.append(row_str)
+                    
+                    if len(sheet_content) > 1:  # 跳过空工作表
+                        content.extend(sheet_content)
+                        content.append('')  # 工作表之间添加空行
+                
+                wb.close()
+            
+            if content:
+                result = '\n'.join(content)
+                self.logger.info(f"Excel文件解析成功，内容长度：{len(result)} 字符")
+                return result
+            else:
+                self.logger.warning(f"Excel文件为空：{file_path}")
+                return None
+        except Exception as e:
+            self.logger.error(f"解析Excel文件失败 {file_path}：{str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return None
 
     

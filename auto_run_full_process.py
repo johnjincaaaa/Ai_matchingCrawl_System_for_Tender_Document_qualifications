@@ -167,6 +167,14 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                         try:
                             if not project.evaluation_content:
                                 logger.warning(f"项目 {project.id} 解析内容为空，跳过分析")
+                                # 自动重置为DOWNLOADED状态，以便重新解析
+                                logger.info(f"🔄 项目 {project.id} 解析内容为空，自动重置为DOWNLOADED状态，等待重新解析")
+                                update_project(db, project.id, {
+                                    "status": ProjectStatus.DOWNLOADED,
+                                    "error_msg": "解析内容为空，已重置状态等待重新解析",
+                                    "evaluation_content": None  # 清空空内容
+                                })
+                                db.commit()
                                 error_count += 1
                                 continue
                             
@@ -417,6 +425,8 @@ def main():
     parser.add_argument('--model-type', type=str, default=None,
                        choices=['local', 'cloud'],
                        help='AI模型类型（local或cloud），默认使用config中的配置')
+    parser.add_argument('--enabled-platforms', type=str, default=None,
+                       help='启用的平台列表，逗号分隔（例如：ningbo,hangzhou），默认爬取所有平台')
     parser.add_argument('--test-mode', action='store_true',
                        help='测试模式：只爬取2个文件')
     
@@ -439,14 +449,21 @@ def main():
         logger.info(f"📅 时间间隔：只爬取当日文件")
     if args.model_type:
         logger.info(f"🤖 AI模型类型：{args.model_type}")
+    if args.enabled_platforms:
+        enabled_platforms = [p.strip() for p in args.enabled_platforms.split(',')]
+        logger.info(f"🌐 启用的平台：{', '.join(enabled_platforms)}")
+    else:
+        logger.info(f"🌐 启用的平台：所有平台")
     
     try:
         # 执行全流程（使用命令行参数）
         days_before = args.days_before if args.days_before > 0 else None
+        enabled_platforms = [p.strip() for p in args.enabled_platforms.split(',')] if args.enabled_platforms else None
         result = run_full_process_cli(
             daily_limit=args.daily_limit,
             days_before=days_before,
-            model_type=args.model_type
+            model_type=args.model_type,
+            enabled_platforms=enabled_platforms
         )
         
         if result:

@@ -72,6 +72,19 @@ except ImportError as e:
             pass
         ShaoXingTenderSpider = None
 
+try:
+    from .platforms.huzhou import HuZhouTenderSpider
+except ImportError as e:
+    try:
+        from spider.platforms.huzhou import HuZhouTenderSpider
+    except ImportError as e2:
+        try:
+            from utils.log import log
+            log.warning(f"导入湖州市爬虫失败（相对导入: {str(e)}, 绝对导入: {str(e2)}），将只显示其他平台")
+        except:
+            pass
+        HuZhouTenderSpider = None
+
 __all__ = [
     # 基础类和管理器
     "BaseSpider",
@@ -94,3 +107,6 @@ if NingBoTenderSpider is not None:
 
 if ShaoXingTenderSpider is not None:
     __all__.append("ShaoXingTenderSpider")
+
+if HuZhouTenderSpider is not None:
+    __all__.append("HuZhouTenderSpider")

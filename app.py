@@ -1233,6 +1233,11 @@ def get_available_platforms():
         except Exception as e:
             log.warning(f"导入绍兴市爬虫失败: {str(e)}", exc_info=True)
         
+        try:
+            from spider.platforms.huzhou import HuZhouTenderSpider
+        except Exception as e:
+            log.warning(f"导入湖州市爬虫失败: {str(e)}")
+        
         platforms = SpiderManager.list_all_spider_info()
         log.debug(f"已注册的爬虫平台: {[p['code'] for p in platforms]}")
         return {info["code"]: info["name"] for info in platforms}
@@ -1252,6 +1257,7 @@ def extract_platform_code(site_name):
         "嘉兴禾采联综合采购服务平台": "jiaxing",
         "宁波市阳光采购服务平台": "ningbo",
         "绍兴市阳光采购服务平台": "shaoxing",
+        "湖州市绿色采购服务平台": "huzhou",
     }
     
     for platform_name, code in platform_map.items():
@@ -3484,6 +3490,14 @@ def _start_background_task(task_type, **kwargs):
                                         log.info(f"项目 {project.id} 分析完成，最终判定：{decision}")
                                     else:
                                         log.warning(f"项目 {project.id} 解析内容为空，跳过分析")
+                                        # 自动重置为DOWNLOADED状态，以便重新解析
+                                        log.info(f"🔄 项目 {project.id} 解析内容为空，自动重置为DOWNLOADED状态，等待重新解析")
+                                        update_project(db, project.id, {
+                                            "status": ProjectStatus.DOWNLOADED,
+                                            "error_msg": "解析内容为空，已重置状态等待重新解析",
+                                            "evaluation_content": None  # 清空空内容
+                                        })
+                                        db.commit()
                                 except Exception as e:
                                     error_msg = str(e)[:500]
                                     log.error(f"AI分析项目失败（项目ID: {project.id}）：{error_msg}", exc_info=True)
@@ -6248,6 +6262,22 @@ def render_task_scheduler():
             with col5:
                 enabled = st.checkbox("立即启用", value=True, help="创建后是否立即启用该任务")
             
+            # 平台选择
+            available_platforms = get_available_platforms()
+            platform_options = ["全部"] + list(available_platforms.values())
+            selected_platform_name = st.selectbox(
+                "选择爬取平台",
+                options=platform_options,
+                index=0,
+                help="选择要爬取的平台，'全部'表示爬取所有平台"
+            )
+            
+            # 将平台名称转换为平台代码
+            selected_platform_code = None
+            if selected_platform_name != "全部":
+                selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
+            enabled_platforms = [selected_platform_code] if selected_platform_code else None
+            
             submitted = st.form_submit_button("创建定时任务", width='stretch')
             
             if submitted:
@@ -6259,7 +6289,8 @@ def render_task_scheduler():
                         schedule_time=schedule_time_str,
                         daily_limit=int(daily_limit),
                         days_before=int(days_before) if days_before else None,
-                        enabled=enabled
+                        enabled=enabled,
+                        enabled_platforms=enabled_platforms
                     )
                     if success:
                         st.success(f"✅ {msg}")

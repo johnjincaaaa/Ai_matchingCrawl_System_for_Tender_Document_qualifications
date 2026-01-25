@@ -110,7 +110,7 @@ class WindowsTaskScheduler:
             return False, str(e)
     
     def create_task(self, task_id: str, schedule_time: str, daily_limit: int = 300, 
-                   days_before: int = None, enabled: bool = True) -> Tuple[bool, str]:
+                   days_before: int = None, enabled: bool = True, enabled_platforms=None) -> Tuple[bool, str]:
         """
         创建定时任务
         
@@ -145,12 +145,18 @@ class WindowsTaskScheduler:
         wrapper_cmd = os.path.join(tasks_dir, f"run_{task_id}.cmd")
         days_before_value = days_before if days_before is not None else 0
         days_before_arg = f" --days-before {days_before_value}" if days_before_value > 0 else ""
+        
+        # 平台参数
+        platforms_arg = ""
+        if enabled_platforms:
+            platforms_str = ",".join(enabled_platforms)
+            platforms_arg = f" --enabled-platforms {platforms_str}"
 
         try:
             with open(wrapper_cmd, "w", encoding="utf-8") as f:
                 f.write("@echo off\n")
                 f.write(f'cd /d "{self.base_dir}"\n')
-                f.write(f'"{self.python_exe}" "{self.script_path}" --daily-limit {daily_limit}{days_before_arg}\n')
+                f.write(f'"{self.python_exe}" "{self.script_path}" --daily-limit {daily_limit}{days_before_arg}{platforms_arg}\n')
         except Exception as e:
             return False, f"创建任务执行脚本失败: {e}"
         
@@ -185,6 +191,7 @@ class WindowsTaskScheduler:
                 "daily_limit": daily_limit,
                 "days_before": days_before,
                 "enabled": enabled,
+                "enabled_platforms": enabled_platforms,
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "wrapper_cmd": wrapper_cmd
             }
@@ -328,7 +335,7 @@ class WindowsTaskScheduler:
         else:
             return False, f"启动任务失败：{output}"
     
-    def test_task(self, daily_limit: int = 300, days_before: int = None) -> Tuple[bool, str]:
+    def test_task(self, daily_limit: int = 300, days_before: int = None, enabled_platforms=None) -> Tuple[bool, str]:
         """测试执行任务（立即运行一次）"""
         try:
             import sys
@@ -343,7 +350,7 @@ class WindowsTaskScheduler:
             import threading
             def run_task():
                 try:
-                    run_full_process_cli(daily_limit=daily_limit, days_before=days_before)
+                    run_full_process_cli(daily_limit=daily_limit, days_before=days_before, enabled_platforms=enabled_platforms)
                 except Exception as e:
                     log.error(f"测试任务执行失败: {e}")
             
