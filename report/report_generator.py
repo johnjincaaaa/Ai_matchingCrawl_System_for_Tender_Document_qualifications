@@ -190,6 +190,8 @@ class ReportGenerator:
                     "宁波市阳光采购服务平台": "ningbo",
                     "绍兴市阳光采购服务平台": "shaoxing",
                     "湖州市绿色采购服务平台": "huzhou",
+                    "义乌市阳光招标采购平台": "yiwu",
+                    "丽水市阳光采购服务平台": "lishui",
                 }
                 for platform_name, code in platform_map.items():
                     if platform_name in site_name:

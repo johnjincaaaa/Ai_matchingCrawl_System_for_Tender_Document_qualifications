@@ -1238,6 +1238,16 @@ def get_available_platforms():
         except Exception as e:
             log.warning(f"导入湖州市爬虫失败: {str(e)}")
         
+        try:
+            from spider.platforms.yiwu import YiWuTenderSpider
+        except Exception as e:
+            log.warning(f"导入义乌市爬虫失败: {str(e)}")
+
+        try:
+            from spider.platforms.lishui import LiShuiTenderSpider
+        except Exception as e:
+            log.warning(f"导入丽水市爬虫失败: {str(e)}")
+        
         platforms = SpiderManager.list_all_spider_info()
         log.debug(f"已注册的爬虫平台: {[p['code'] for p in platforms]}")
         return {info["code"]: info["name"] for info in platforms}
@@ -1258,6 +1268,8 @@ def extract_platform_code(site_name):
         "宁波市阳光采购服务平台": "ningbo",
         "绍兴市阳光采购服务平台": "shaoxing",
         "湖州市绿色采购服务平台": "huzhou",
+        "义乌市阳光招标采购平台": "yiwu",
+        "丽水市阳光采购服务平台": "lishui",
     }
     
     for platform_name, code in platform_map.items():
@@ -4662,7 +4674,8 @@ def run_full_process():
                         # 直接调用解析（file_parser内部已有超时机制）
                         # 如果解析时间过长，会在日志中记录
                         try:
-                            content = file_parser.parse_file(file_path, project.id)
+                            parser = get_file_parser()
+                            content = parser.parse_file(file_path, project.id)
                             parse_elapsed = time.time() - parse_start_time
                             parse_logger.info(f"Streamlit解析返回：项目ID={project.id}, 内容长度={len(content) if content else 0}, 耗时={parse_elapsed:.2f}秒")
                             

@@ -1,0 +1,555 @@
+<!--
+ * @Description:
+ * @Author: gaojian
+ * @LastEditors: gaojian
+ * @LastEditTime: 2022-04-21 09:35:07
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+    <meta name="renderer" content="webkit">
+
+    			<meta name="SiteDomain" content="lsygcg.com">
+
+    			<meta name="SiteName" content="丽水市阳光采购服务平台">
+
+    			<title>丽水市阳光采购服务平台</title>
+
+    		<meta name="ColumnName" content="招标公告">
+    		<meta name="ColumnDescription" content="">
+    		<meta name="ColumnKeywords" content="">
+    		<meta name="ColumnType" content="">
+    		<link rel="stylesheet" href="/js/libs/pagination/mricode.pagination.css">
+    <link rel="stylesheet" href="/css/common.css">
+    <link rel="stylesheet" href="/css/about.css">
+    <script src="/js/libs/jquery.min.js"></script>
+	<script src="/js/mustache.js"></script>
+	<script src="/js/libs/pagination/mricode.pagination.js"></script>
+
+   <link rel="stylesheet" href="/css/webBuilderCommonGray.css"></head>
+
+<body>
+
+    <!-- 尾部 -->
+    <div id="header"></div>
+    <!-- 内容部分 -->
+    <div class="container main clearfix">
+        <div class="left l">
+
+
+                       <div class="menu-hd">交易信息</div>
+                        <div class="menu-bd">
+				 <ul class="wb-tree">
+								<li class="wb-tree-node current">
+									<a href="/jyxx/001001/sec.html" class="wb-tree-name">招标采购</a>
+
+								<ul class="sub-tree level3">
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001001/001001001/sec.html" class="wb-tree-name">工程类</a>
+
+								<ul class="sub-tree level4">
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001001/sec.html" class="wb-tree-name">招标公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001002/sec.html" class="wb-tree-name">变更公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001003/sec.html" class="wb-tree-name">中标候选人公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001004/sec.html" class="wb-tree-name">中标公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001005/sec.html" class="wb-tree-name">异常公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001006/sec.html" class="wb-tree-name">开标结果公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001001/001001001007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+								</li>
+							</ul>
+							</li>
+
+								<li class="wb-tree-node current">
+									<a href="/jyxx/001001/001001002/sec.html" class="wb-tree-name">货物类</a>
+
+								<ul class="sub-tree level4">
+
+								<li class="wb-tree-node">
+									<a class="current" href="/jyxx/001001/001001002/001001002001/sec.html" class="wb-tree-name">招标公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001002/001001002002/sec.html" class="wb-tree-name">变更公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001002/001001002003/sec.html" class="wb-tree-name">中标候选人公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001002/001001002004/sec.html" class="wb-tree-name">中标公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001002/001001002005/sec.html" class="wb-tree-name">异常公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001002/001001002006/sec.html" class="wb-tree-name">开标结果公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001002/001001002007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+								</li>
+							</ul>
+							</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001001/001001003/sec.html" class="wb-tree-name">服务类</a>
+
+								<ul class="sub-tree level4">
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003001/sec.html" class="wb-tree-name">招标公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003002/sec.html" class="wb-tree-name">变更公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003003/sec.html" class="wb-tree-name">中标候选人公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003004/sec.html" class="wb-tree-name">中标公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003005/sec.html" class="wb-tree-name">异常公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003006/sec.html" class="wb-tree-name">开标结果公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001001/001001003/001001003007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+								</li>
+							</ul>
+							</li>
+							</ul>
+							</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001002/sec.html" class="wb-tree-name">非招标采购</a>
+
+								<ul class="sub-tree level3">
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001002/001002001/sec.html" class="wb-tree-name">工程类</a>
+
+								<ul class="sub-tree level4">
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001001/sec.html" class="wb-tree-name">采购公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001002/sec.html" class="wb-tree-name">变更公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001003/sec.html" class="wb-tree-name">结果公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001004/sec.html" class="wb-tree-name">竞价公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001005/sec.html" class="wb-tree-name">拟单一来源</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001006/sec.html" class="wb-tree-name">异常公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002001/001002001008/sec.html" class="wb-tree-name">小额项目公告</a>
+								</li>
+							</ul>
+							</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001002/001002002/sec.html" class="wb-tree-name">货物类</a>
+
+								<ul class="sub-tree level4">
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002001/sec.html" class="wb-tree-name">采购公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002002/sec.html" class="wb-tree-name">变更公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002003/sec.html" class="wb-tree-name">结果公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002004/sec.html" class="wb-tree-name">竞价公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002005/sec.html" class="wb-tree-name">拟单一来源</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002006/sec.html" class="wb-tree-name">异常公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002002/001002002008/sec.html" class="wb-tree-name">小额项目公告</a>
+								</li>
+							</ul>
+							</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001002/001002003/sec.html" class="wb-tree-name">服务类</a>
+
+								<ul class="sub-tree level4">
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003001/sec.html" class="wb-tree-name">采购公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003002/sec.html" class="wb-tree-name">变更公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003003/sec.html" class="wb-tree-name">结果公示</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003004/sec.html" class="wb-tree-name">竞价公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003005/sec.html" class="wb-tree-name">拟单一来源</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003006/sec.html" class="wb-tree-name">异常公告</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+								</li>
+
+								<li class="wb-tree-node">
+									<a class="" href="/jyxx/001002/001002003/001002003008/sec.html" class="wb-tree-name">小额项目公告</a>
+								</li>
+							</ul>
+							</li>
+							</ul>
+							</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/sec.html" class="wb-tree-name">电力项目</a>
+
+								<ul class="sub-tree level3">
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003001/sec.html" class="wb-tree-name">招标公告</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003002/sec.html" class="wb-tree-name">变更公告</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003003/sec.html" class="wb-tree-name">开标结果公告</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003004/sec.html" class="wb-tree-name">中标候选人公示</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003005/sec.html" class="wb-tree-name">中标结果</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003006/sec.html" class="wb-tree-name">异常公告</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003007/sec.html" class="wb-tree-name">质疑投诉回复</a>
+									</li>
+
+								<li class="wb-tree-node ">
+									<a href="/jyxx/001003/001003008/sec.html" class="wb-tree-name">项目招标公示</a>
+									</li>
+							</ul>
+							</li>
+							</ul></div>
+        </div>
+        <div class="right">
+            <div class="info-hd clearfix">
+
+
+                       <span class="info-tt l">交易信息</span>
+                        <div class="search r">
+                    <input class="search-input l" type="text" placeholder="请输入关键字">
+                    <a href="javascript:void(0);" class="searchbtn"></a>
+                </div>
+            </div>
+            <div class="infobox">
+                <div class="infobox-hd clearfix">
+
+
+								<span id="categorynum" class="infobox-tt l" categorynum = "001001002001">招标公告</span>
+							<!-- <span class="infobox-tt l">发包公告</span>
+                    <a href="" class="more r">更多+</a> -->
+                </div>
+                <div class="infobox-bd">
+					<ul class="wb-data-item"  id="list">
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20260113/e1907b12-a287-45b9-86a4-6d60a159fac0.html" target="_blank" title="丽水市科技馆展陈工程（一期）展品深化设计制作安装（含环境布展）及相关服务采购">[市本级]<font color='#FF0000'>[正在投标]</font>丽水市科技馆展陈工程（一期）展品深化设计制作安装（含环境布展）及相关服务采购</a>
+                            </div>
+                            <span class="wb-data-date">2026/01/13</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20260113/0b4a4ffa-ce5b-4e51-b202-ff4c4205ac15.html" target="_blank" title="丽水交投建筑工业化制造有限公司水泥采购项目">[市本级]<font color='#FF0000'>[正在投标]</font>丽水交投建筑工业化制造有限公司水泥采购项目</a>
+                            </div>
+                            <span class="wb-data-date">2026/01/13</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251231/f69d21c6-eb31-4a0e-ac36-d6a2b038ce13.html" target="_blank" title="2026年古堰画乡景区游船采购项目">[莲都区]<font color='#FF0000'>[报名结束]</font>2026年古堰画乡景区游船采购项目</a>
+                            </div>
+                            <span class="wb-data-date">2025/12/31</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251211/9d617874-d0b6-42ef-8ea5-1b36a807b435.html" target="_blank" title="丽水市数字公司智能化系统硬件集成采购项目公开招标公告‍">[市本级]<font color='#FF0000'>[报名结束]</font>丽水市数字公司智能化系统硬件集成采购项目公开招标公告‍</a>
+                            </div>
+                            <span class="wb-data-date">2025/12/11</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251202/878b0bb7-cdb6-4f91-927c-c23a56d51331.html" target="_blank" title="高溪智控流体装备创新基地二号园生物质综合利用供汽站项目—锅炉设计、设备供货及安装">[莲都区]<font color='#FF0000'>[报名结束]</font>高溪智控流体装备创新基地二号园生物质综合利用供汽站项目—锅炉设计、设备供货及安装</a>
+                            </div>
+                            <span class="wb-data-date">2025/12/02</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251127/b61b1d1a-01a8-4ef2-9bec-f831b928caef.html" target="_blank" title="丽水交投建筑工业化制造有限公司矿粉采购项目">[市本级]<font color='#FF0000'>[报名结束]</font>丽水交投建筑工业化制造有限公司矿粉采购项目</a>
+                            </div>
+                            <span class="wb-data-date">2025/11/27</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251118/af0b41a7-3421-444c-bdad-68b3ef6c7557.html" target="_blank" title="丽水市公共交通集团有限公司莲都区农村客运“村村通”车辆采购项目">[市本级]<font color='#FF0000'>[报名结束]</font>丽水市公共交通集团有限公司莲都区农村客运“村村通”车辆采购项目</a>
+                            </div>
+                            <span class="wb-data-date">2025/11/18</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251113/6394ff20-dd21-46cb-b913-71dd770ad806.html" target="_blank" title="丽水交投建筑工业化制造有限公司水泥采购项目">[市本级]<font color='red'>[报名结束]</font>丽水交投建筑工业化制造有限公司水泥采购项目<font color='red'>[已作废]</font></a>
+                            </div>
+                            <span class="wb-data-date">2025/11/13</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251110/37e945c5-c777-4887-9017-82189821d065.html" target="_blank" title="【国泰保证金首单验证】丽水产权宁波银行保证金验证1106XT-1">[和平区]<font color='red'>[报名结束]</font>【国泰保证金首单验证】丽水产权宁波银行保证金验证1106XT-1<font color='red'>[已作废]</font></a>
+                            </div>
+                            <span class="wb-data-date">2025/11/10</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251107/c2698f87-21bc-42bc-bf93-b94823a49110.html" target="_blank" title="碧湖(高溪)市民中心-公共服务中心人才公寓配套电器采购安装项目的公开招标公告">[市本级]<font color='#FF0000'>[报名结束]</font>碧湖(高溪)市民中心-公共服务中心人才公寓配套电器采购安装项目的公开招标公告</a>
+                            </div>
+                            <span class="wb-data-date">2025/11/07</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251106/b013edd6-a716-44f0-95d9-e90fb3d0ae4b.html" target="_blank" title="碧湖(高溪)市民中心-公共服务中心人才公寓配套家具采购安装项目">[市本级]<font color='#FF0000'>[报名结束]</font>碧湖(高溪)市民中心-公共服务中心人才公寓配套家具采购安装项目</a>
+                            </div>
+                            <span class="wb-data-date">2025/11/06</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251104/0dd6f172-aeff-4c8d-bcfe-4fc6da354978.html" target="_blank" title="丽水机场边坡及公建屋顶光伏项目（一期）-逆变器采购项目">[市本级]<font color='#FF0000'>[报名结束]</font>丽水机场边坡及公建屋顶光伏项目（一期）-逆变器采购项目</a>
+                            </div>
+                            <span class="wb-data-date">2025/11/04</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251021/30e709eb-47a8-4f0a-b37e-c6ec45395ae2.html" target="_blank" title="丽水市汽车运输集团股份有限公司营运客车采购项目13米旅游客车、9米公路客运纯电动车辆">[市本级]<font color='#FF0000'>[报名结束]</font>丽水市汽车运输集团股份有限公司营运客车采购项目13米旅游客车、9米公路客运纯电动车辆</a>
+                            </div>
+                            <span class="wb-data-date">2025/10/21</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20251010/58e2d542-aa2b-47fe-a328-7ba3e19d1175.html" target="_blank" title="丽水经开区富岭未来社区项目家具采购（第二次）">[市本级]<font color='#FF0000'>[报名结束]</font>丽水经开区富岭未来社区项目家具采购（第二次）</a>
+                            </div>
+                            <span class="wb-data-date">2025/10/10</span>
+                        </li>
+
+
+
+									<li class="wb-data-list">
+                            <div class="wb-data-infor">
+                                <a href="/jyxx/001001/001001002/001001002001/20250930/8ac12098-4217-4e05-9a2c-aa162a58033e.html" target="_blank" title="丽水缙云欣享农事服务中心厂房光伏发电项目">[市本级]<font color='#FF0000'>[报名结束]</font>丽水缙云欣享农事服务中心厂房光伏发电项目</a>
+                            </div>
+                            <span class="wb-data-date">2025/09/30</span>
+                        </li>
+
+
+									</ul><div class="pager" id="pager"></div>
+
+                                        <script>
+                                        	function getQueryString(name) {
+       											var reg = new RegExp("(^|&)" + name + "=([^&]*)(&|$)", "i");
+        										var r = window.location.search.substr(1).match(reg);
+        										if (r != null) return encodeURI(r[2]);
+                                                return null;
+    										}
+
+                                        	var pageIndex= 0;
+											var categoryPath = '/jyxx/001001/001001002/001001002001';
+											var pagetotalcount = 6;
+											var total = 98;
+                                        	if(getQueryString('pageIndex')){
+                                        		pageIndex=getQueryString('pageIndex')-1;
+                                        	}
+											var oldindex = pageIndex;
+
+                                            $("#pager").pagination({
+                                                pageIndex:pageIndex,
+                                                pageSize: 15,
+                                                total: 98,
+                                                pageBtnCount:10,
+                                                debug: false,
+                                                showInfo: false,
+                                                showJump: false,
+                                                showPageSizes: false
+                                            });
+                                            $("#pager").on("pageClicked", function (event, data) {
+                                                if(data.pageIndex==0){
+                                                    window.location.href="/jyxx/001001/001001002/001001002001/sec.html";
+                                                }else if(data.pageIndex<6){
+                                                    window.location.href="/jyxx/001001/001001002/001001002001/"+(data.pageIndex+1)+".html";
+                                                }else{
+													verify(data.pageIndex,oldindex,total);
+
+                                            	}
+                                            }).on('jumpClicked', function (event, data) {
+                                                if(data.pageIndex==0){
+                                                    window.location.href="/jyxx/001001/001001002/001001002001/sec.html";
+                                                }else if(data.pageIndex<6){
+                                                    window.location.href="/jyxx/001001/001001002/001001002001/"+(data.pageIndex+1)+".html";
+                                                }else{
+												verify(data.pageIndex,oldindex,total);
+
+                                            	}
+                                            });
+
+                                        </script>
+                                        </div>
+				<div class="noinfolist hidden">
+                    <h2>对不起，没有相关信息。</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 尾部 -->
+    <div id="footer"></div>
+    <script type="text/template" id="infolist">
+        {{#infodata}}
+		<li class="wb-data-list">
+			<div class="wb-data-infor">
+				<a class="infotitle" href="{{infourl}}" target="_blank">{{{title}}}</a>
+			</div>
+			<span class="wb-data-date">{{infodate}}</span>
+		</li>
+
+        {{/infodata}}
+    </script>
+	<script src="/js/lib/layer/layer.js"></script>
+    <script src="/js/webBuilderCommon.js"></script>
+    <script src="/js/js.cookie.min.js"></script>
+    <script src="/js/Common.min.js"></script>
+    <script src="/js/common.js"></script>
+    <script src="/js/tree.js"></script>
+    <script src="/js/about.js"></script>
+</body>
+
+</html>

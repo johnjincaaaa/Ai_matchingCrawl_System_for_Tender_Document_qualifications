@@ -93,13 +93,14 @@ def download(FileUrl):
         headers=headers,
     )
     print(response.status_code)
+    print(len(response.text))
     with open('doc.pdf', 'wb') as f:
         f.write(response.content)
 
 
 if __name__ == '__main__':
     get_download_url('M3302005195029567001')
-    # download('2')
+    download('2')
 
 
 

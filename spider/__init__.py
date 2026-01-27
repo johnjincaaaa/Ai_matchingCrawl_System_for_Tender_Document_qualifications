@@ -85,6 +85,32 @@ except ImportError as e:
             pass
         HuZhouTenderSpider = None
 
+try:
+    from .platforms.yiwu import YiWuTenderSpider
+except ImportError as e:
+    try:
+        from spider.platforms.yiwu import YiWuTenderSpider
+    except ImportError as e2:
+        try:
+            from utils.log import log
+            log.warning(f"导入义乌市爬虫失败（相对导入: {str(e)}, 绝对导入: {str(e2)}），将只显示其他平台")
+        except:
+            pass
+        YiWuTenderSpider = None
+
+try:
+    from .platforms.lishui import LiShuiTenderSpider
+except ImportError as e:
+    try:
+        from spider.platforms.lishui import LiShuiTenderSpider
+    except ImportError as e2:
+        try:
+            from utils.log import log
+            log.warning(f"导入丽水市爬虫失败（相对导入: {str(e)}, 绝对导入: {str(e2)}），将只显示其他平台")
+        except:
+            pass
+        LiShuiTenderSpider = None
+
 __all__ = [
     # 基础类和管理器
     "BaseSpider",
@@ -110,3 +136,9 @@ if ShaoXingTenderSpider is not None:
 
 if HuZhouTenderSpider is not None:
     __all__.append("HuZhouTenderSpider")
+
+if YiWuTenderSpider is not None:
+    __all__.append("YiWuTenderSpider")
+
+if LiShuiTenderSpider is not None:
+    __all__.append("LiShuiTenderSpider")
