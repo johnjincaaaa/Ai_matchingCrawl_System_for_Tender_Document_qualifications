@@ -30,6 +30,7 @@ class ZheJiangTenderSpider(BaseSpider):
     
     BASE_URL = "https://zfcg.czt.zj.gov.cn"
     API_URL = "https://zfcg.czt.zj.gov.cn/portal/category"
+    # 旧版下载接口（已废弃，仅保留常量，实际下载逻辑见 _download_document）
     DOWNLOAD_URL = "https://zfcg.czt.zj.gov.cn/attachment/downloadUrl"
 
     def __init__(self, daily_limit=None, days_before=None, **kwargs):
@@ -80,13 +81,21 @@ class ZheJiangTenderSpider(BaseSpider):
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "\"Windows\""
         }
-        # cookies配置
+        # cookies配置（用于浙江政府采购网列表与详情接口）
         self.cookies = {
             "_zcy_log_client_uuid": "3b7c1220-cba3-11f0-861e-89fd9d7f1874",
             "sensorsdata2015jssdkcross": "%7B%22distinct_id%22%3A%2219ac5ddd55cafc-07953edbd474964-26061b51-1327104-19ac5ddd55de53%22%2C%22first_id%22%3A%22%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E5%BC%95%E8%8D%90%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC%22%2C%22%24latest_referrer%22%3A%22https%3A%2F%2Fmiddle.zcygov.cn%2F%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTlhYzVkZGQ1NWNhZmMtMDc5NTNlZGJkNDc0OTY0LTI2MDYxYjUxLTEzMjcxMDQtMTlhYzVkZGQ1NWRlNTMifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%22%2C%22value%22%3A%22%22%7D%2C%22%24device_id%22%3A%2219ac5ddd55cafc-07953edbd474964-26061b51-1327104-19ac5ddd55de53%22%7D",
             "zcy_im_uuid": "7fc1785c-e118-40de-9121-f70e75b33961",
             "arialoadData": "false"
         }
+
+        # 政采云主站登录配置（用于招标文件下载的新流程）
+        # 默认使用 demo 账号密码，建议在生产环境通过环境变量 ZCY_USERNAME / ZCY_PASSWORD 配置
+        self.zcy_username = os.getenv("ZCY_USERNAME", "qy1234567")
+        self.zcy_password = os.getenv("ZCY_PASSWORD", "wqh284704256")
+        self.zcy_login_url = "https://login.zcygov.cn/login"
+        self.zcy_session: requests.Session | None = None
+
 
     def _fetch_page(self, session, category_code, page_no, district_code=None, is_gov=True):
         """获取单页数据（带重试机制）"""
@@ -185,160 +194,349 @@ class ZheJiangTenderSpider(BaseSpider):
         
         return None
     
+    def _get_acquire_purfile_detail_url(self, article_id: str, session: requests.Session) -> str | None:
+        """
+        新流程第1步：通过浙江政府采购网详情接口获取 acquirePurFileDetailUrl
+        等价于 aaaa_update.py 中的 get_download_url
+        """
+        try:
+            headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Pragma": "no-cache",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "User-Agent": self.headers.get("User-Agent"),
+                "X-Requested-With": "XMLHttpRequest",
+                "sec-ch-ua": self.headers.get("sec-ch-ua", ""),
+                "sec-ch-ua-mobile": self.headers.get("sec-ch-ua-mobile", "?0"),
+                "sec-ch-ua-platform": self.headers.get("sec-ch-ua-platform", "\"Windows\""),
+            }
+            cookies = self.cookies.copy()
+            url = f"{self.BASE_URL}/portal/detail"
+            params = {
+                "articleId": article_id,
+                "timestamp": str(int(time.time() * 1000)),
+            }
+            resp = session.get(url, headers=headers, cookies=cookies, params=params,
+                               timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15))
+            resp.raise_for_status()
+            data = resp.json()
+            log.debug(f"获取详情接口成功 articleId={article_id}, 响应前500字符: {json.dumps(data, ensure_ascii=False)[:500]}")
+            result = data.get("result") or {}
+            detail_data = result.get("data") or {}
+            attachment_vo = detail_data.get("attachmentVO") or {}
+            acquire_url = attachment_vo.get("acquirePurFileDetailUrl")
+            if not acquire_url:
+                log.warning(f"未从详情接口获取到 acquirePurFileDetailUrl, articleId={article_id}")
+                return None
+            log.info(f"获取到 acquirePurFileDetailUrl: {acquire_url}")
+            return acquire_url
+        except Exception as e:
+            log.error(f"获取 acquirePurFileDetailUrl 失败 articleId={article_id}: {str(e)}")
+            return None
+
+    def _ensure_zcy_login(self) -> requests.Session | None:
+        """
+        新流程第2步：登录政采云主站（www.zcygov.cn），获取带鉴权 Cookie 的 Session
+        等价于 aaaa_update.py 中的 login 函数，增加了日志与错误处理
+        """
+        if self.zcy_session is not None:
+            return self.zcy_session
+
+        session = requests.Session()
+
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Origin": "https://login.zcygov.cn",
+            "Referer": "https://login.zcygov.cn/user-login/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+            "sec-ch-ua": "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Microsoft Edge\";v=\"144\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "\"Windows\"",
+        }
+
+        params = {
+            "current_uri": "https://login.zcygov.cn/user-login/#/login",
+        }
+
+        try:
+            # 预加载登录页，建立初始 Cookie
+            session.get("https://login.zcygov.cn/user-login/#/login", headers=headers, timeout=15)
+
+            files = {
+                "platformCode": (None, "zcy"),
+                "loginType": (None, "password"),
+                "requestType": (None, "async"),
+                "username": (None, self.zcy_username),
+                "password": (None, self.zcy_password),
+                "agreement": (None, "general_login_agreement"),
+            }
+
+            log.info("正在登录政采云主站用于下载招标文件...")
+            resp = session.post(
+                url=self.zcy_login_url,
+                params=params,
+                headers=headers,
+                files=files,
+                timeout=15,
+            )
+            resp.raise_for_status()
+
+            # 尝试解析 JSON，检查是否有 success 字段
+            try:
+                resp_json = resp.json()
+                log.debug(f"政采云登录响应: {json.dumps(resp_json, ensure_ascii=False)[:500]}")
+            except Exception:
+                log.debug(f"政采云登录非JSON响应，前500字符: {resp.text[:500]}")
+
+            # 简单校验：登录后应当持有部分关键 Cookie
+            if not session.cookies:
+                log.error("政采云登录后未获得任何 Cookie，可能登录失败")
+                return None
+
+            self.zcy_session = session
+            log.info("政采云登录成功，将复用该会话下载文件")
+            return session
+        except Exception as e:
+            log.error(f"政采云登录失败: {str(e)}")
+            return None
+
+    def _submit_and_get_file_url(self, login_session: requests.Session, acquire_url: str) -> tuple[str | None, str | None]:
+        """
+        新流程第3步+第4步：
+        - 访问 acquirePurFileDetailUrl 页面
+        - 提交表单 acquirePurFile/submit
+        - 轮询 acquirePurFile/getPurFile 获取真实文件下载链接 fileUrl
+
+        等价于 aaaa_update.py 中的 download 函数。
+        返回 (file_url, file_name)
+        """
+        try:
+            # projectId 为 acquire_url 最后一段
+            project_id = acquire_url.rstrip("/").split("/")[-1]
+
+            # 1）访问详情页，建立上下文
+            login_session.get(acquire_url, timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15))
+
+            # 2）提交获取资格的表单
+            submit_url = "https://www.zcygov.cn/api/biz-tender/tender-center/acquirePurFile/submit"
+            payload = {
+                "legalPerson": "王庆浩",
+                "name": "衢州市乾元文化传媒有限公司",
+                "contactAddress": "浙江省衢州市柯城区盈川西路2号1幢409室",
+                "contactEmail": "2912492958@qq.com",
+                "contactPhone": "15857012066",
+                "contactName": "王庆浩",
+                "projectId": project_id,
+                "attachments": [],
+                "needBilling": 1,
+                "invoicinMethod": 2,
+                "tabType": 0,
+                "intentionItemList": [1],
+            }
+            data = json.dumps(payload, separators=(",", ":"))
+            resp_submit = login_session.post(submit_url, data=data, timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30))
+            resp_submit.raise_for_status()
+            log.debug(f"提交 acquirePurFile/submit 响应: {resp_submit.text[:300]}")
+
+            # 3）获取真实文件下载链接
+            get_url = "https://www.zcygov.cn/api/biz-tender/tender-center/acquirePurFile/getPurFile"
+            params = {
+                "timestamp": str(int(time.time() * 1000)),
+                "projectId": project_id,
+            }
+            resp_get = login_session.get(get_url, params=params, timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30))
+            resp_get.raise_for_status()
+
+            result = resp_get.json()
+            log.debug(f"acquirePurFile/getPurFile 响应: {json.dumps(result, ensure_ascii=False)[:500]}")
+            if not result.get("success"):
+                log.error(f"acquirePurFile/getPurFile 返回失败: {result}")
+                return None, None
+
+            files = result.get("result") or []
+            if not files:
+                log.warning("acquirePurFile/getPurFile 返回空文件列表")
+                return None, None
+
+            first_file = files[0]
+            file_url = first_file.get("fileUrl")
+            file_name = first_file.get("name")
+            if not file_url:
+                log.error(f"acquirePurFile/getPurFile 未包含 fileUrl: {first_file}")
+                return None, None
+
+            log.info(f"获取到政采云文件下载链接: {file_url}")
+            return file_url, file_name
+        except Exception as e:
+            log.error(f"获取政采云文件下载链接失败: {str(e)}")
+            return None, None
+
     def _download_document(self, article_id, project_title="", session=None):
-        """下载招标文件（带重试机制和增强的错误处理）"""
+        """下载招标文件（使用政采云新流程，带重试机制和增强的错误处理）"""
         max_retries = SPIDER_CONFIG["anti_crawl"].get("retry_times", 3)
         retry_count = 0
 
         while retry_count <= max_retries:
             try:
-                # 构建下载请求头
-                download_headers = self.headers.copy()
-                download_headers["Referer"] = f"{self.BASE_URL}/site/detail?parentId=600007&articleId={article_id}"
-                
-                # 构建查询参数
-                params = {
-                    "articleIdStr": article_id,
-                    "timestamp": str(int(time.time() * 1000))
-                }
-                
-                # 使用外部传入的session或创建新的session
-                use_session = session if session else requests.Session()
+                # 1）通过浙江政府采购网详情接口拿到 acquirePurFileDetailUrl
                 if not session:
-                    use_session.headers.update(download_headers)
-                    use_session.cookies.update(self.cookies)
-                
-                response = use_session.get(
-                    self.DOWNLOAD_URL,
-                    params=params,
-                    timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30)
-                )
-                response.raise_for_status()
-                
-                # 解析响应获取下载链接
-                result = response.json()
-                if result.get('success'):
-                    download_link = result.get('result')
-                    if download_link:
-                        log.info(f"获取到文件下载链接: {download_link}")
-                        
-                        # 提取文件名
-                        file_extension = download_link.split('.')[-1].split('?')[0]
-                        # 处理article_id中的特殊字符，确保Windows系统兼容
-                        safe_article_id = article_id.replace('/','_').replace('\\','_').replace(':','_').replace('*','_').replace('?','_').replace('"','_').replace('<','_').replace('>','_').replace('|','_')
-                        
-                        # 处理项目标题，移除特殊字符，限制长度
-                        if project_title:
-                            safe_title = project_title
-                            # 移除Windows不允许的字符
-                            for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', ' ']:
-                                safe_title = safe_title.replace(char, '_')
-                            # 限制标题长度，避免文件名过长
-                            safe_title = safe_title[:50]  # 保留前50个字符
-                            filename = f"ZJ_{safe_title}_{safe_article_id}.{file_extension}"
-                        else:
-                            filename = f"ZJ_{safe_article_id}.{file_extension}"
-                        
-                        filepath = os.path.join(FILES_DIR, filename)
-                        
-                        # 下载文件（带分块超时处理）
-                        log.info(f"开始下载文件: {filename}")
-                        # 设置文件下载的超时时间（连接超时和读取超时分开设置）
-                        download_timeout = (30, 120)  # (连接超时, 读取超时)
-                        file_response = use_session.get(download_link, stream=True, timeout=download_timeout)
-                        file_response.raise_for_status()
-                        
-                        # 获取文件大小
-                        content_length = file_response.headers.get('content-length')
-                        total_size = int(content_length) if content_length else 0
-                        downloaded_size = 0
-                        
-                        # 创建临时文件路径
-                        temp_filepath = f"{filepath}.tmp"
-                        
-                        # 如果目标文件已存在，先删除（避免重命名失败）
+                    # 如果上层未传入 session，则使用一个新的 session 访问 zfcg.czt.zj.gov.cn
+                    use_zfcg_session = requests.Session()
+                    use_zfcg_session.headers.update(self.headers)
+                    use_zfcg_session.cookies.update(self.cookies)
+                else:
+                    use_zfcg_session = session
+
+                acquire_url = self._get_acquire_purfile_detail_url(article_id, use_zfcg_session)
+                if not acquire_url:
+                    log.error(f"articleId={article_id} 未能获取 acquirePurFileDetailUrl")
+                    return None, None
+
+                # 2）确保已登录政采云主站，获取登录会话
+                login_session = self._ensure_zcy_login()
+                if not login_session:
+                    log.error("无法登录政采云主站，放弃下载该文件")
+                    return None, None
+
+                # 3）提交 acquirePurFile 表单并获取最终文件下载链接
+                download_link, remote_name = self._submit_and_get_file_url(login_session, acquire_url)
+                if download_link:
+                    log.info(f"获取到最终文件下载链接: {download_link}")
+
+                    # 提取文件扩展名
+                    file_extension = download_link.split(".")[-1].split("?")[0]
+
+                    # 处理article_id中的特殊字符，确保Windows系统兼容
+                    safe_article_id = (
+                        article_id.replace("/", "_")
+                        .replace("\\", "_")
+                        .replace(":", "_")
+                        .replace("*", "_")
+                        .replace("?", "_")
+                        .replace('"', "_")
+                        .replace("<", "_")
+                        .replace(">", "_")
+                        .replace("|", "_")
+                    )
+
+                    # 处理项目标题/远程文件名，移除特殊字符，限制长度
+                    base_title = project_title or (remote_name or "")
+                    safe_title = base_title
+                    for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|", " "]:
+                        safe_title = safe_title.replace(char, "_")
+                    safe_title = safe_title[:50] if safe_title else safe_article_id
+                    filename = f"ZJ_{safe_title}_{safe_article_id}.{file_extension}"
+
+                    filepath = os.path.join(FILES_DIR, filename)
+
+                    # 下载文件（带分块超时处理）
+                    log.info(f"开始下载文件: {filename}")
+                    # 设置文件下载的超时时间（连接超时和读取超时分开设置）
+                    download_timeout = (30, 120)  # (连接超时, 读取超时)
+                    file_response = login_session.get(download_link, stream=True, timeout=download_timeout)
+                    file_response.raise_for_status()
+
+                    # 获取文件大小
+                    content_length = file_response.headers.get("content-length")
+                    total_size = int(content_length) if content_length else 0
+                    downloaded_size = 0
+
+                    # 创建临时文件路径
+                    temp_filepath = f"{filepath}.tmp"
+
+                    # 如果目标文件已存在，先删除（避免重命名失败）
+                    if os.path.exists(filepath):
+                        try:
+                            os.remove(filepath)
+                            log.debug(f"删除已存在的文件: {filepath}")
+                        except Exception as e:
+                            log.warning(f"删除已存在文件失败: {filepath}, 错误: {str(e)}")
+                            # 如果删除失败，使用带时间戳的文件名
+                            timestamp = int(time.time())
+                            base_name = os.path.splitext(filename)[0]
+                            ext = os.path.splitext(filename)[1]
+                            filename = f"{base_name}_{timestamp}{ext}"
+                            filepath = os.path.join(FILES_DIR, filename)
+                            temp_filepath = f"{filepath}.tmp"
+
+                    # 如果临时文件已存在，先删除
+                    if os.path.exists(temp_filepath):
+                        try:
+                            os.remove(temp_filepath)
+                            log.debug(f"删除已存在的临时文件: {temp_filepath}")
+                        except Exception as e:
+                            log.warning(f"删除临时文件失败: {temp_filepath}, 错误: {str(e)}")
+
+                    # 分块下载文件
+                    temp_file = None
+                    try:
+                        temp_file = open(temp_filepath, "wb")
+                        # 设置块超时计时器
+                        last_chunk_time = time.time()
+                        for chunk in file_response.iter_content(chunk_size=8192):
+                            # 检查是否超时（超过60秒未收到数据）
+                            current_time = time.time()
+                            if current_time - last_chunk_time > 60:
+                                raise requests.Timeout("文件下载块超时")
+
+                            if chunk:
+                                temp_file.write(chunk)
+                                downloaded_size += len(chunk)
+                                last_chunk_time = current_time
+
+                        # 确保文件写入完成
+                        temp_file.flush()
+                        temp_file.close()
+                        temp_file = None
+
+                        # 下载完成后重命名临时文件
+                        # 再次检查目标文件是否存在（防止并发下载）
                         if os.path.exists(filepath):
                             try:
                                 os.remove(filepath)
-                                log.debug(f"删除已存在的文件: {filepath}")
+                                log.debug(f"重命名前删除已存在的目标文件: {filepath}")
                             except Exception as e:
-                                log.warning(f"删除已存在文件失败: {filepath}, 错误: {str(e)}")
+                                log.warning(f"重命名前删除文件失败: {filepath}, 错误: {str(e)}")
                                 # 如果删除失败，使用带时间戳的文件名
                                 timestamp = int(time.time())
                                 base_name = os.path.splitext(filename)[0]
-                                file_extension = os.path.splitext(filename)[1]
-                                filename = f"{base_name}_{timestamp}{file_extension}"
+                                ext = os.path.splitext(filename)[1]
+                                filename = f"{base_name}_{timestamp}{ext}"
                                 filepath = os.path.join(FILES_DIR, filename)
-                                temp_filepath = f"{filepath}.tmp"
-                        
-                        # 如果临时文件已存在，先删除
+
+                        # 重命名临时文件（使用shutil.move作为备选，更可靠）
+                        try:
+                            os.rename(temp_filepath, filepath)
+                        except OSError:
+                            # 如果rename失败，尝试使用shutil.move
+                            shutil.move(temp_filepath, filepath)
+
+                        log.info(f"文件下载完成: {filepath} (大小: {downloaded_size/1024:.2f}KB)")
+                        return filepath, file_extension
+                    except Exception as e:
+                        # 确保临时文件被关闭
+                        if temp_file:
+                            try:
+                                temp_file.close()
+                            except Exception:
+                                pass
+                        # 清理临时文件
                         if os.path.exists(temp_filepath):
                             try:
                                 os.remove(temp_filepath)
-                                log.debug(f"删除已存在的临时文件: {temp_filepath}")
-                            except Exception as e:
-                                log.warning(f"删除临时文件失败: {temp_filepath}, 错误: {str(e)}")
-                        
-                        # 分块下载文件
-                        temp_file = None
-                        try:
-                            temp_file = open(temp_filepath, 'wb')
-                            # 设置块超时计时器
-                            last_chunk_time = time.time()
-                            for chunk in file_response.iter_content(chunk_size=8192):
-                                # 检查是否超时（超过60秒未收到数据）
-                                current_time = time.time()
-                                if current_time - last_chunk_time > 60:
-                                    raise requests.Timeout("文件下载块超时")
-                                
-                                if chunk:
-                                    temp_file.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    last_chunk_time = current_time
-                            
-                            # 确保文件写入完成
-                            temp_file.flush()
-                            temp_file.close()
-                            temp_file = None
-                            
-                            # 下载完成后重命名临时文件
-                            # 再次检查目标文件是否存在（防止并发下载）
-                            if os.path.exists(filepath):
-                                try:
-                                    os.remove(filepath)
-                                    log.debug(f"重命名前删除已存在的目标文件: {filepath}")
-                                except Exception as e:
-                                    log.warning(f"重命名前删除文件失败: {filepath}, 错误: {str(e)}")
-                                    # 如果删除失败，使用带时间戳的文件名
-                                    timestamp = int(time.time())
-                                    base_name = os.path.splitext(filename)[0]
-                                    file_extension = os.path.splitext(filename)[1]
-                                    filename = f"{base_name}_{timestamp}{file_extension}"
-                                    filepath = os.path.join(FILES_DIR, filename)
-                            
-                            # 重命名临时文件（使用shutil.move作为备选，更可靠）
-                            try:
-                                os.rename(temp_filepath, filepath)
-                            except OSError:
-                                # 如果rename失败，尝试使用shutil.move
-                                shutil.move(temp_filepath, filepath)
-                            
-                            log.info(f"文件下载完成: {filepath} (大小: {downloaded_size/1024:.2f}KB)")
-                            return filepath, file_extension
-                        except Exception as e:
-                            # 确保临时文件被关闭
-                            if temp_file:
-                                try:
-                                    temp_file.close()
-                                except:
-                                    pass
-                            # 清理临时文件
-                            if os.path.exists(temp_filepath):
-                                try:
-                                    os.remove(temp_filepath)
-                                except:
-                                    pass
-                            raise  # 重新抛出异常以便外层处理
+                            except Exception:
+                                pass
+                        raise  # 重新抛出异常以便外层处理
                     else:
                         # 特殊情况：success为True但result为None
                         log.warning(f"API返回success=True但未提供下载链接，响应内容: {result}")

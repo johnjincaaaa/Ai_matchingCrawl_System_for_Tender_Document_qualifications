@@ -19,6 +19,15 @@ from types import SimpleNamespace
 import logging
 import warnings
 
+# 初始化基础log对象，防止utils.log导入失败时出现NameError
+log = logging.getLogger("tender_app")
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    _handler.setFormatter(_formatter)
+    log.addHandler(_handler)
+log.setLevel(logging.INFO)
+
 # 配置Python标准库logging，过滤掉不需要的警告
 # 这些警告是框架层面的，不影响应用功能，但会产生大量日志噪音
 logging.getLogger('tornado').setLevel(logging.ERROR)  # 只显示ERROR级别以上的日志

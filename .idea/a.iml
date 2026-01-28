@@ -9,7 +9,7 @@
       <excludeFolder url="file://$MODULE_DIR$/tender_files" />
     </content>
     <content url="file://$MODULE_DIR$/spider/platforms/ningbo/js/node_modules" />
-    <orderEntry type="jdk" jdkName="Python 3.9" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.12 virtualenv at E:\标书ai匹配系统ByJohnjincaaa\a\.venv" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">
