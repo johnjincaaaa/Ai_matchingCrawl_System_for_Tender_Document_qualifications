@@ -1256,6 +1256,11 @@ def get_available_platforms():
             from spider.platforms.lishui import LiShuiTenderSpider
         except Exception as e:
             log.warning(f"导入丽水市爬虫失败: {str(e)}")
+
+        try:
+            from spider.platforms.quzhou import QuZhouTenderSpider
+        except Exception as e:
+            log.warning(f"导入衢州市爬虫失败: {str(e)}")
         
         platforms = SpiderManager.list_all_spider_info()
         log.debug(f"已注册的爬虫平台: {[p['code'] for p in platforms]}")
@@ -1279,6 +1284,7 @@ def extract_platform_code(site_name):
         "湖州市绿色采购服务平台": "huzhou",
         "义乌市阳光招标采购平台": "yiwu",
         "丽水市阳光采购服务平台": "lishui",
+        "衢州市阳光交易服务平台": "quzhou",
     }
     
     for platform_name, code in platform_map.items():

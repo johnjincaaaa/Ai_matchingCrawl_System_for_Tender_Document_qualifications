@@ -284,7 +284,7 @@ class ZheJiangTenderSpider(BaseSpider):
             log.info("正在登录政采云主站用于下载招标文件...")
             resp = session.post(
                 url=self.zcy_login_url,
-                params=params,
+                    params=params,
                 headers=headers,
                 files=files,
                 timeout=15,
@@ -412,7 +412,7 @@ class ZheJiangTenderSpider(BaseSpider):
                 download_link, remote_name = self._submit_and_get_file_url(login_session, acquire_url)
                 if download_link:
                     log.info(f"获取到最终文件下载链接: {download_link}")
-
+                        
                     # 提取文件扩展名
                     file_extension = download_link.split(".")[-1].split("?")[0]
 
@@ -428,7 +428,7 @@ class ZheJiangTenderSpider(BaseSpider):
                         .replace(">", "_")
                         .replace("|", "_")
                     )
-
+                        
                     # 处理项目标题/远程文件名，移除特殊字符，限制长度
                     base_title = project_title or (remote_name or "")
                     safe_title = base_title
@@ -436,24 +436,24 @@ class ZheJiangTenderSpider(BaseSpider):
                         safe_title = safe_title.replace(char, "_")
                     safe_title = safe_title[:50] if safe_title else safe_article_id
                     filename = f"ZJ_{safe_title}_{safe_article_id}.{file_extension}"
-
+                    
                     filepath = os.path.join(FILES_DIR, filename)
-
+                    
                     # 下载文件（带分块超时处理）
                     log.info(f"开始下载文件: {filename}")
                     # 设置文件下载的超时时间（连接超时和读取超时分开设置）
                     download_timeout = (30, 120)  # (连接超时, 读取超时)
                     file_response = login_session.get(download_link, stream=True, timeout=download_timeout)
                     file_response.raise_for_status()
-
+                    
                     # 获取文件大小
                     content_length = file_response.headers.get("content-length")
                     total_size = int(content_length) if content_length else 0
                     downloaded_size = 0
-
+                    
                     # 创建临时文件路径
                     temp_filepath = f"{filepath}.tmp"
-
+                    
                     # 如果目标文件已存在，先删除（避免重命名失败）
                     if os.path.exists(filepath):
                         try:
@@ -468,7 +468,7 @@ class ZheJiangTenderSpider(BaseSpider):
                             filename = f"{base_name}_{timestamp}{ext}"
                             filepath = os.path.join(FILES_DIR, filename)
                             temp_filepath = f"{filepath}.tmp"
-
+                    
                     # 如果临时文件已存在，先删除
                     if os.path.exists(temp_filepath):
                         try:
@@ -476,7 +476,7 @@ class ZheJiangTenderSpider(BaseSpider):
                             log.debug(f"删除已存在的临时文件: {temp_filepath}")
                         except Exception as e:
                             log.warning(f"删除临时文件失败: {temp_filepath}, 错误: {str(e)}")
-
+                    
                     # 分块下载文件
                     temp_file = None
                     try:
@@ -488,17 +488,17 @@ class ZheJiangTenderSpider(BaseSpider):
                             current_time = time.time()
                             if current_time - last_chunk_time > 60:
                                 raise requests.Timeout("文件下载块超时")
-
+                            
                             if chunk:
                                 temp_file.write(chunk)
                                 downloaded_size += len(chunk)
                                 last_chunk_time = current_time
-
+                        
                         # 确保文件写入完成
                         temp_file.flush()
                         temp_file.close()
                         temp_file = None
-
+                        
                         # 下载完成后重命名临时文件
                         # 再次检查目标文件是否存在（防止并发下载）
                         if os.path.exists(filepath):
@@ -513,14 +513,14 @@ class ZheJiangTenderSpider(BaseSpider):
                                 ext = os.path.splitext(filename)[1]
                                 filename = f"{base_name}_{timestamp}{ext}"
                                 filepath = os.path.join(FILES_DIR, filename)
-
+                        
                         # 重命名临时文件（使用shutil.move作为备选，更可靠）
                         try:
                             os.rename(temp_filepath, filepath)
                         except OSError:
                             # 如果rename失败，尝试使用shutil.move
                             shutil.move(temp_filepath, filepath)
-
+                        
                         log.info(f"文件下载完成: {filepath} (大小: {downloaded_size/1024:.2f}KB)")
                         return filepath, file_extension
                     except Exception as e:
