@@ -194,24 +194,33 @@ class ZheJiangTenderSpider(BaseSpider):
         
         return None
     
-    def _get_acquire_purfile_detail_url(self, article_id: str, session: requests.Session) -> str | None:
+    def _get_project_code_from_detail(self, article_id: str, session: requests.Session) -> str | None:
         """
-        新流程第1步：通过浙江政府采购网详情接口获取 acquirePurFileDetailUrl
-        等价于 aaaa_update.py 中的 get_download_url
+        新流程第1步：通过浙江政府采购网详情接口获取 projectCode
+        等价于 aaaa_update_update.py 中的 get_download_articleId
         """
         try:
+            # 参考测试脚本中的最新请求头，适当复用当前爬虫的 UA 配置
             headers = {
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "Pragma": "no-cache",
+                "Referer": f"{self.BASE_URL}/site/detail?parentId=600007&articleId={article_id}",
                 "Sec-Fetch-Dest": "empty",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Site": "same-origin",
-                "User-Agent": self.headers.get("User-Agent"),
+                "User-Agent": self.headers.get(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/145.0.0.0 Safari/537.36",
+                ),
                 "X-Requested-With": "XMLHttpRequest",
-                "sec-ch-ua": self.headers.get("sec-ch-ua", ""),
+                "sec-ch-ua": self.headers.get(
+                    "sec-ch-ua",
+                    "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+                ),
                 "sec-ch-ua-mobile": self.headers.get("sec-ch-ua-mobile", "?0"),
                 "sec-ch-ua-platform": self.headers.get("sec-ch-ua-platform", "\"Windows\""),
             }
@@ -219,24 +228,32 @@ class ZheJiangTenderSpider(BaseSpider):
             url = f"{self.BASE_URL}/portal/detail"
             params = {
                 "articleId": article_id,
-                "timestamp": str(int(time.time() * 1000)),
+                # 和测试脚本保持一致，使用秒级时间戳
+                "timestamp": str(int(time.time())),
             }
-            resp = session.get(url, headers=headers, cookies=cookies, params=params,
-                               timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15))
+            resp = session.get(
+                url,
+                headers=headers,
+                cookies=cookies,
+                params=params,
+                timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15),
+            )
             resp.raise_for_status()
             data = resp.json()
-            log.debug(f"获取详情接口成功 articleId={article_id}, 响应前500字符: {json.dumps(data, ensure_ascii=False)[:500]}")
+            log.debug(
+                f"获取详情接口成功 articleId={article_id}, "
+                f"响应前500字符: {json.dumps(data, ensure_ascii=False)[:500]}"
+            )
             result = data.get("result") or {}
             detail_data = result.get("data") or {}
-            attachment_vo = detail_data.get("attachmentVO") or {}
-            acquire_url = attachment_vo.get("acquirePurFileDetailUrl")
-            if not acquire_url:
-                log.warning(f"未从详情接口获取到 acquirePurFileDetailUrl, articleId={article_id}")
+            project_code = detail_data.get("projectCode")
+            if not project_code:
+                log.warning(f"未从详情接口获取到 projectCode, articleId={article_id}")
                 return None
-            log.info(f"获取到 acquirePurFileDetailUrl: {acquire_url}")
-            return acquire_url
+            log.info(f"获取到 projectCode: {project_code} (articleId={article_id})")
+            return project_code
         except Exception as e:
-            log.error(f"获取 acquirePurFileDetailUrl 失败 articleId={article_id}: {str(e)}")
+            log.error(f"获取 projectCode 失败 articleId={article_id}: {str(e)}")
             return None
 
     def _ensure_zcy_login(self) -> requests.Session | None:
@@ -310,25 +327,111 @@ class ZheJiangTenderSpider(BaseSpider):
             log.error(f"政采云登录失败: {str(e)}")
             return None
 
-    def _submit_and_get_file_url(self, login_session: requests.Session, acquire_url: str) -> tuple[str | None, str | None]:
+    def _get_project_id_from_precision_search(
+        self, login_session: requests.Session, project_code: str
+    ) -> str | None:
+        """
+        新流程第2步：通过政采云 precisionSearch 接口，从 projectCode 获取 projectId
+        等价于 aaaa_update_update.py 中的 get_projectId
+        """
+        try:
+            url = "https://www.zcygov.cn/api/biz-tender/tender-center/acquirePurFile/precisionSearch"
+            params = {
+                "timestamp": str(int(time.time())),
+                "projectNameOrProjectCode": project_code,
+            }
+            resp = login_session.get(
+                url,
+                params=params,
+                timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15),
+            )
+            resp.raise_for_status()
+            resp_data = resp.json()
+            log.debug(
+                f"precisionSearch 响应: {json.dumps(resp_data, ensure_ascii=False)[:500]}"
+            )
+            result_list = resp_data.get("result") or []
+            if not result_list:
+                log.warning(f"precisionSearch 未返回任何结果，projectCode={project_code}")
+                return None
+            project_id = result_list[0].get("projectId")
+            if not project_id:
+                log.warning(f"precisionSearch 结果中缺少 projectId，projectCode={project_code}")
+                return None
+            log.info(f"通过 precisionSearch 获取到 projectId={project_id} (projectCode={project_code})")
+            return project_id
+        except Exception as e:
+            log.error(f"precisionSearch 获取 projectId 失败 projectCode={project_code}: {str(e)}")
+            return None
+
+    def _submit_and_get_file_url_by_project_id(
+        self, login_session: requests.Session, project_id: str
+    ) -> tuple[str | None, str | None]:
         """
         新流程第3步+第4步：
-        - 访问 acquirePurFileDetailUrl 页面
+        - 调用 checkSupplierViolation 校验
         - 提交表单 acquirePurFile/submit
         - 轮询 acquirePurFile/getPurFile 获取真实文件下载链接 fileUrl
 
-        等价于 aaaa_update.py 中的 download 函数。
+        等价于 aaaa_update_update.py 中的 download 函数。
         返回 (file_url, file_name)
         """
         try:
-            # projectId 为 acquire_url 最后一段
-            project_id = acquire_url.rstrip("/").split("/")[-1]
+            # 1）校验供应商违规状态（按测试脚本逻辑执行一次即可）
+            verify_url = (
+                "https://www.zcygov.cn/api/biz-tender/tender-center/"
+                "supplier/common/checkSupplierViolation"
+            )
+            verify_params = {
+                "timestamp": str(int(time.time())),
+                "projectId": project_id,
+                "supplierId": "",
+            }
+            try:
+                verify_resp = login_session.get(
+                    verify_url,
+                    params=verify_params,
+                    timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15),
+                )
+                log.debug(
+                    f"checkSupplierViolation 响应: {verify_resp.status_code} "
+                    f"{verify_resp.text[:300]}"
+                )
+            except Exception as e:
+                # 校验失败不一定阻断主流程，这里仅记录日志
+                log.warning(
+                    f"checkSupplierViolation 调用失败 projectId={project_id}: {str(e)}"
+                )
 
-            # 1）访问详情页，建立上下文
-            login_session.get(acquire_url, timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 15))
-
-            # 2）提交获取资格的表单
-            submit_url = "https://www.zcygov.cn/api/biz-tender/tender-center/acquirePurFile/submit"
+            # 2）提交获取资格的表单（保持与测试脚本相同字段）
+            headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "application/json",
+                "Origin": "https://www.zcygov.cn",
+                "Pragma": "no-cache",
+                "Referer": (
+                    "https://www.zcygov.cn/bid-enroll/_procurement_/acquirepurfile/"
+                    f"launch/{project_id}?type=4"
+                ),
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+                ),
+                "X-Requested-With": "XMLHttpRequest",
+                "sec-ch-ua": "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"",
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": "\"Windows\"",
+            }
+            submit_url = (
+                "https://www.zcygov.cn/api/biz-tender/tender-center/"
+                "acquirePurFile/submit"
+            )
             payload = {
                 "legalPerson": "王庆浩",
                 "name": "衢州市乾元文化传媒有限公司",
@@ -344,21 +447,36 @@ class ZheJiangTenderSpider(BaseSpider):
                 "intentionItemList": [1],
             }
             data = json.dumps(payload, separators=(",", ":"))
-            resp_submit = login_session.post(submit_url, data=data, timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30))
+            resp_submit = login_session.post(
+                submit_url,
+                headers=headers,
+                data=data,
+                timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30),
+            )
             resp_submit.raise_for_status()
-            log.debug(f"提交 acquirePurFile/submit 响应: {resp_submit.text[:300]}")
+            log.debug(f"acquirePurFile/submit 响应: {resp_submit.text[:300]}")
 
             # 3）获取真实文件下载链接
-            get_url = "https://www.zcygov.cn/api/biz-tender/tender-center/acquirePurFile/getPurFile"
+            get_url = (
+                "https://www.zcygov.cn/api/biz-tender/tender-center/"
+                "acquirePurFile/getPurFile"
+            )
             params = {
-                "timestamp": str(int(time.time() * 1000)),
+                "timestamp": str(int(time.time())),
                 "projectId": project_id,
             }
-            resp_get = login_session.get(get_url, params=params, timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30))
+            resp_get = login_session.get(
+                get_url,
+                params=params,
+                timeout=SPIDER_CONFIG["anti_crawl"].get("timeout", 30),
+            )
             resp_get.raise_for_status()
 
             result = resp_get.json()
-            log.debug(f"acquirePurFile/getPurFile 响应: {json.dumps(result, ensure_ascii=False)[:500]}")
+            log.debug(
+                f"acquirePurFile/getPurFile 响应: "
+                f"{json.dumps(result, ensure_ascii=False)[:500]}"
+            )
             if not result.get("success"):
                 log.error(f"acquirePurFile/getPurFile 返回失败: {result}")
                 return None, None
@@ -378,17 +496,17 @@ class ZheJiangTenderSpider(BaseSpider):
             log.info(f"获取到政采云文件下载链接: {file_url}")
             return file_url, file_name
         except Exception as e:
-            log.error(f"获取政采云文件下载链接失败: {str(e)}")
+            log.error(f"通过 projectId 获取政采云文件下载链接失败 projectId={project_id}: {str(e)}")
             return None, None
 
     def _download_document(self, article_id, project_title="", session=None):
-        """下载招标文件（使用政采云新流程，带重试机制和增强的错误处理）"""
+        """下载招标文件（使用政采云新流程：projectCode + projectId + getPurFile）"""
         max_retries = SPIDER_CONFIG["anti_crawl"].get("retry_times", 3)
         retry_count = 0
 
         while retry_count <= max_retries:
             try:
-                # 1）通过浙江政府采购网详情接口拿到 acquirePurFileDetailUrl
+                # 1）准备访问浙江政府采购网详情页的会话
                 if not session:
                     # 如果上层未传入 session，则使用一个新的 session 访问 zfcg.czt.zj.gov.cn
                     use_zfcg_session = requests.Session()
@@ -397,19 +515,32 @@ class ZheJiangTenderSpider(BaseSpider):
                 else:
                     use_zfcg_session = session
 
-                acquire_url = self._get_acquire_purfile_detail_url(article_id, use_zfcg_session)
-                if not acquire_url:
-                    log.error(f"articleId={article_id} 未能获取 acquirePurFileDetailUrl")
+                # 2）从详情页获取 projectCode（down_articleId）
+                project_code = self._get_project_code_from_detail(article_id, use_zfcg_session)
+                if not project_code:
+                    log.error(f"articleId={article_id} 未能获取 projectCode，放弃本次下载")
                     return None, None
 
-                # 2）确保已登录政采云主站，获取登录会话
+                # 3）确保已登录政采云主站，获取登录会话
                 login_session = self._ensure_zcy_login()
                 if not login_session:
                     log.error("无法登录政采云主站，放弃下载该文件")
                     return None, None
 
-                # 3）提交 acquirePurFile 表单并获取最终文件下载链接
-                download_link, remote_name = self._submit_and_get_file_url(login_session, acquire_url)
+                # 4）通过 precisionSearch 从 projectCode 获取 projectId
+                project_id = self._get_project_id_from_precision_search(
+                    login_session, project_code
+                )
+                if not project_id:
+                    log.error(
+                        f"articleId={article_id}, projectCode={project_code} 未能获取 projectId，放弃本次下载"
+                    )
+                    return None, None
+
+                # 5）提交 acquirePurFile 表单并获取最终文件下载链接
+                download_link, remote_name = self._submit_and_get_file_url_by_project_id(
+                    login_session, project_id
+                )
                 if download_link:
                     log.info(f"获取到最终文件下载链接: {download_link}")
                         
