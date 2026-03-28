@@ -16,6 +16,18 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 FILES_DIR = os.path.join(BASE_DIR, "tender_files")
 REPORT_DIR = os.path.join(BASE_DIR, "reports")
 
+# 报告导出（宁波等）：「来源网站」指向本机已下载标书的 HTTP 根地址，勿带尾部斜杠。
+# 示例：http://192.168.1.10:8766 或对 tender_files 做了反向代理的站点根。
+# 未配置时，在 Streamlit 内生成报告会尝试用浏览器请求的 Host 推断（仍需网关把
+# TENDER_FILES_URL_PREFIX 映射到 FILES_DIR，否则链接需自行可访问）。
+APP_PUBLIC_BASE_URL = os.getenv("APP_PUBLIC_BASE_URL", "").strip().rstrip("/")
+_tfiles_prefix = os.getenv("TENDER_FILES_URL_PREFIX")
+if _tfiles_prefix is None:
+    TENDER_FILES_URL_PREFIX = "/tender-files"
+else:
+    TENDER_FILES_URL_PREFIX = _tfiles_prefix.strip().rstrip("/")
+
+
 # 日志配置（供 utils/log.py 使用）
 LOG_CONFIG = {
     "file_name": os.path.join(LOG_DIR, "tender_system.log"),  # 主日志文件

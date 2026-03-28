@@ -6,7 +6,8 @@ from datetime import datetime, date
 from sqlalchemy import and_, or_
 import os
 import json
-from config import REPORT_DIR
+from urllib.parse import quote
+from config import REPORT_DIR, FILES_DIR, APP_PUBLIC_BASE_URL, TENDER_FILES_URL_PREFIX
 from utils.log import log
 from utils.db import get_db, TenderProject, ProjectStatus
 
@@ -92,12 +93,46 @@ class ReportGenerator:
             return f"https://ygcg.nbcqjy.org:8071/page/projectinfo/signup.html?PrjId={project_id}"
         return ""
 
-    def _resolve_source_url(self, site_name, download_url, project_id):
-        """报告「来源网站」列：优先可点击的公告详情页；避免把省级政府采购链接套到地市平台 project_id 上。"""
+    def _tender_file_public_url(self, file_path, public_file_base_url=None):
+        """将本地 tender_files 下的已存在文件转为可点击 HTTP 路径（依赖网关或静态服务映射）。"""
+        base = (public_file_base_url or APP_PUBLIC_BASE_URL or "").strip().rstrip("/")
+        if not base or not file_path:
+            return ""
+        path = os.path.abspath(os.path.normpath(file_path))
+        root = os.path.abspath(FILES_DIR)
+        if not os.path.isfile(path):
+            return ""
+        try:
+            rel = os.path.relpath(path, root)
+        except ValueError:
+            return ""
+        rel_norm = rel.replace("\\", "/")
+        if rel_norm.startswith("../") or rel_norm == "..":
+            return ""
+        enc = "/".join(quote(seg, safe="") for seg in rel_norm.split("/"))
+        prefix = (TENDER_FILES_URL_PREFIX or "").strip().rstrip("/")
+        if prefix and not prefix.startswith("/"):
+            prefix = "/" + prefix
+        return f"{base}{prefix}/{enc}" if prefix else f"{base}/{enc}"
+
+    def _resolve_source_url(
+            self,
+            site_name,
+            download_url,
+            project_id,
+            file_path=None,
+            public_file_base_url=None,
+    ):
+        """报告「来源网站」列：宁波优先本机标书 HTTP 链接；其余逻辑同前。"""
         du = (download_url or "").strip()
         sn = site_name or ""
         if "本地上传" in sn and not du:
             return ""
+
+        if "宁波市阳光采购" in sn:
+            local_url = self._tender_file_public_url(file_path, public_file_base_url)
+            if local_url:
+                return local_url
 
         if du.startswith("http"):
             if self._is_likely_file_download_url(du):
@@ -318,8 +353,15 @@ class ReportGenerator:
             log.debug(f"从comparison_result中提取客观分可得分失败：{str(e)}")
             return None
 
-    def _get_project_data(self, start_date=None, end_date=None, regions=None, procurement_types=None,
-                          platform_code=None):
+    def _get_project_data(
+            self,
+            start_date=None,
+            end_date=None,
+            regions=None,
+            procurement_types=None,
+            platform_code=None,
+            public_file_base_url=None,
+    ):
         """获取项目数据（支持筛选）
 
         Args:
@@ -328,6 +370,7 @@ class ReportGenerator:
             regions: 城市列表（如["杭州市", "宁波市"]），会按提取的城市进行筛选，None表示全选
             procurement_types: 采购类型列表（如["政府采购", "国企采购"]），None表示全选
             platform_code: 平台代码（如"zhejiang"、"hangzhou"），None表示全选
+            public_file_base_url: 报告内文件外链根地址（如 https://a.com），覆盖 config.APP_PUBLIC_BASE_URL
         """
         query = self.db.query(TenderProject)
 
@@ -409,6 +452,8 @@ class ReportGenerator:
                 proj.site_name,
                 proj.download_url,
                 getattr(proj, "project_id", None),
+                file_path=getattr(proj, "file_path", None),
+                public_file_base_url=public_file_base_url,
             )
 
             data.append({
@@ -501,8 +546,16 @@ class ReportGenerator:
 
         return wb
 
-    def generate_report(self, start_date=None, end_date=None, regions=None, procurement_types=None, platform_code=None,
-                        report_filename=None):
+    def generate_report(
+            self,
+            start_date=None,
+            end_date=None,
+            regions=None,
+            procurement_types=None,
+            platform_code=None,
+            report_filename=None,
+            public_file_base_url=None,
+    ):
         """生成Excel报告（支持筛选）
 
         Args:
@@ -512,6 +565,7 @@ class ReportGenerator:
             procurement_types: 采购类型列表（如["政府采购", "国企采购"]），None或空列表表示全选
             platform_code: 平台代码（如"zhejiang"、"hangzhou"），None表示全选
             report_filename: 报告文件名，None表示使用默认名称
+            public_file_base_url: 宁波等项目「来源网站」文件外链根地址，None 则用 config 或仅官方页
         """
         try:
             log.info(f"开始生成报告：{self.report_date}")
@@ -530,7 +584,8 @@ class ReportGenerator:
                 end_date=end_date,
                 regions=regions,
                 procurement_types=procurement_types,
-                platform_code=platform_code
+                platform_code=platform_code,
+                public_file_base_url=public_file_base_url,
             )
 
             if len(all_data) == 0:
