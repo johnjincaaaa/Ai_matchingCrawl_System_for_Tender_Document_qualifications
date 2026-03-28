@@ -267,12 +267,17 @@ class NingBoTenderSpider(BaseSpider):
                     except:
                         pass
             
+            # 项目公告详情页（与站点前端一致：/page/projectinfo/signup.html?PrjId=）
+            detail_page_url = f"{self.base_url}/page/projectinfo/signup.html?PrjId={prj_id}"
+
             # 构建项目数据
             project_data = {
                 "project_id": prj_id,
                 "project_name": prj_name,
-                "site_name": f"{self.PLATFORM_NAME}",
+                "site_name": f"{self.PLATFORM_NAME}-宁波市",
                 "publish_time": signup_start_datetime,  # 使用 publish_time 而不是 publish_date，必须是 datetime 对象
+                "download_url": detail_page_url,
+                "region": "宁波市",
                 # 注意：project_no 和 project_type 不是数据库字段，相关信息已包含在 evaluation_content 中
                 "status": ProjectStatus.DOWNLOADED,
                 "evaluation_content": f"项目编号：{prj_no}\n项目类型：{ztb_type_name}\n报名开始时间：{signup_start_date_str}\n报名截止时间：{signup_end_date_str if signup_end_date_str else '未知'}",
