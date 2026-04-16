@@ -48,6 +48,9 @@ class NingBoTenderSpider(BaseSpider):
         access_token = get_access_token()
         if access_token:
             self.headers_list['access_token'] = access_token
+            # 下载文件接口也需要携带 access_token，否则可能返回 404/鉴权失败页面
+            if isinstance(self.headers_download, dict):
+                self.headers_download['access_token'] = access_token
             log.info(f"成功获取并设置access_token（长度: {len(access_token)}）")
         else:
             log.warning("获取access_token失败，将使用默认值或空值")

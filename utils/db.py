@@ -199,6 +199,33 @@ def get_db():
 # 保存项目数据
 def save_project(db, project_data):
     try:
+        # === 下载失败兜底标注 ===
+        # 多数平台在下载失败时可能仍然先把 status 设置成 DOWNLOADED，
+        # 但此时 file_path 为空或文件不存在/大小为0。
+        # 为了让后续解析/统计正确区分“下载失败”，这里统一兜底修正为 ERROR。
+        try:
+            from config import FILES_DIR
+            status = project_data.get("status")
+            file_path = project_data.get("file_path")
+            error_msg = project_data.get("error_msg") or ""
+
+            # 仅当上层标记为已下载，但实际文件不在时，才认为下载失败。
+            if status == ProjectStatus.DOWNLOADED:
+                if not file_path:
+                    project_data["status"] = ProjectStatus.ERROR
+                    project_data["error_msg"] = (error_msg or "文件下载失败（file_path 为空）").strip()
+                else:
+                    fp = file_path
+                    if not os.path.isabs(fp):
+                        fp = os.path.join(FILES_DIR, fp)
+                    # file_path 可能指向 zip/文件夹：这里只按“可用文件”兜底；文件夹由平台自行控制
+                    if not os.path.exists(fp) or (os.path.isfile(fp) and os.path.getsize(fp) <= 0):
+                        project_data["status"] = ProjectStatus.ERROR
+                        project_data["error_msg"] = (error_msg or "文件下载失败（文件不存在或大小为0）").strip()
+        except Exception:
+            # 不让兜底逻辑影响原本落库流程
+            pass
+
         # 检查项目是否已存在（通过project_id）
         project_id = project_data.get('project_id')
         if project_id:

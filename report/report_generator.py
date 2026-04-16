@@ -23,6 +23,18 @@ _PLATFORM_DEFAULT_REGION = {
     "衢州市阳光交易服务平台": "衢州市",
 }
 
+_PLATFORM_OFFICIAL_URLS = {
+    "浙江省政府采购网": "https://zfcg.czt.zj.gov.cn/",
+    "杭州市公共资源交易网": "https://ggzy.hzctc.hangzhou.gov.cn/",
+    "嘉兴禾采联综合采购服务平台": "https://jxszwsjb.jiaxing.gov.cn/",
+    "宁波市阳光采购服务平台": "https://ygcg.nbcqjy.org/",
+    "绍兴市阳光采购服务平台": "https://ygcg.sxjypt.com/",
+    "湖州市绿色采购服务平台": "https://huzhouztb.epoint.com.cn/",
+    "义乌市阳光招标采购平台": "https://ywjypt.yw.gov.cn/",
+    "丽水市阳光采购服务平台": "https://lssggzy.lishui.gov.cn/",
+    "衢州市阳光交易服务平台": "https://qzszfcg.qz.gov.cn/",
+}
+
 
 class ReportGenerator:
     def __init__(self):
@@ -93,6 +105,14 @@ class ReportGenerator:
             return f"https://ygcg.nbcqjy.org:8071/page/projectinfo/signup.html?PrjId={project_id}"
         return ""
 
+    def _build_platform_official_url(self, site_name: str) -> str:
+        """返回平台官方入口 URL。"""
+        sn = site_name or ""
+        for platform_name, official_url in _PLATFORM_OFFICIAL_URLS.items():
+            if platform_name in sn:
+                return official_url
+        return ""
+
     def _tender_file_public_url(self, file_path, public_file_base_url=None):
         """将本地 tender_files 下的已存在文件转为可点击 HTTP 路径（依赖网关或静态服务映射）。"""
         base = (public_file_base_url or APP_PUBLIC_BASE_URL or "").strip().rstrip("/")
@@ -115,35 +135,35 @@ class ReportGenerator:
             prefix = "/" + prefix
         return f"{base}{prefix}/{enc}" if prefix else f"{base}/{enc}"
 
-    def _resolve_source_url(
-            self,
-            site_name,
-            download_url,
-            project_id,
-            file_path=None,
-            public_file_base_url=None,
-    ):
-        """报告「来源网站」列：宁波优先本机标书 HTTP 链接；其余逻辑同前。"""
-        du = (download_url or "").strip()
+    def _resolve_source_url(self, site_name, download_url, project_id):
+        """报告「来源网站」列固定使用平台官网入口 URL。"""
         sn = site_name or ""
-        if "本地上传" in sn and not du:
+        if "本地上传" in sn:
             return ""
-
-        if "宁波市阳光采购" in sn:
-            local_url = self._tender_file_public_url(file_path, public_file_base_url)
-            if local_url:
-                return local_url
-
-        if du.startswith("http"):
-            if self._is_likely_file_download_url(du):
-                built = self._build_platform_detail_url(sn, project_id or "")
-                return built or du
+        official_url = self._build_platform_official_url(sn)
+        if official_url:
+            return official_url
+        du = (download_url or "").strip()
+        if du.startswith("http") and not self._is_likely_file_download_url(du):
             return du
-
         built = self._build_platform_detail_url(sn, project_id or "")
-        if built:
-            return built
-        return du or ""
+        return built or du or ""
+
+    def _resolve_report_city(self, site_name, region_text):
+        """
+        报告中的“城市”字段：
+        - 浙江省政府采购网：继续按 region 提取城市
+        - 其他平台：直接按平台映射城市
+        """
+        sn = (site_name or "").strip()
+        if "浙江省政府采购网" in sn:
+            _, city = self._extract_province_city(region_text)
+            return city
+        for platform_name, default_city in _PLATFORM_DEFAULT_REGION.items():
+            if platform_name in sn:
+                return default_city.replace("市", "")
+        _, city = self._extract_province_city(region_text)
+        return city
 
     def _extract_province_city(self, region):
         """从region中提取省份和城市
@@ -395,7 +415,8 @@ class ReportGenerator:
             if proj.region or region_text:
                 log.debug(f"项目 {proj.id} region 原始={proj.region!r} 推断={region_text!r}")
 
-            province, city = self._extract_province_city(region_text)
+            province, _derived_city = self._extract_province_city(region_text)
+            city = self._resolve_report_city(proj.site_name, region_text)
 
             # 城市筛选（按提取的城市进行筛选）
             if regions and len(regions) > 0:
@@ -452,7 +473,9 @@ class ReportGenerator:
                 proj.site_name,
                 proj.download_url,
                 getattr(proj, "project_id", None),
-                file_path=getattr(proj, "file_path", None),
+            )
+            download_link = self._tender_file_public_url(
+                getattr(proj, "file_path", None),
                 public_file_base_url=public_file_base_url,
             )
 
@@ -464,6 +487,7 @@ class ReportGenerator:
                 "区域": region_text or "未知",
                 "采购类型": procurement_type,
                 "来源网站": source_url,
+                "下载链接": download_link,
                 "发布时间": publish_time_str,
                 "文件格式": proj.file_format or "",
                 "状态": proj.status.value,
@@ -511,13 +535,14 @@ class ReportGenerator:
                 'D': 12,  # 城市
                 'E': 15,  # 区域
                 'F': 12,  # 采购类型
-                'G': 25,  # 来源网站
-                'H': 18,  # 发布时间
-                'I': 10,  # 文件格式
-                'J': 10,  # 状态
-                'K': 12,  # 最终判定
-                'L': 15,  # 客观分总分值
-                'M': 30,  # 错误信息
+                'G': 28,  # 来源网站
+                'H': 40,  # 下载链接
+                'I': 18,  # 发布时间
+                'J': 10,  # 文件格式
+                'K': 10,  # 状态
+                'L': 12,  # 最终判定
+                'M': 15,  # 客观分总分值
+                'N': 30,  # 错误信息
             }
             for col, width in column_widths.items():
                 ws.column_dimensions[col].width = width

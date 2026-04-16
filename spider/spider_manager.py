@@ -3,8 +3,13 @@
 负责爬虫的注册、发现、创建和统一调度
 """
 
-from typing import List, Dict, Optional, Type
+from typing import List, Dict, Optional, Type, Any
+import os
+from datetime import datetime
+from sqlalchemy import func
 from utils.log import log
+from config import FILES_DIR
+from utils.db import get_db, TenderProject, ProjectStatus
 # 兼容相对导入和绝对导入
 try:
     from .base_spider import BaseSpider
@@ -262,3 +267,184 @@ class SpiderManager:
             bool: True表示已注册
         """
         return platform_code in cls._spiders
+
+    @classmethod
+    def download_one_from_homepage_per_platform(
+        cls,
+        days_before: Optional[int] = None,
+        enabled_platforms: Optional[List[str]] = None,
+        per_platform_daily_limit: int = 1,
+        verify_download: bool = True,
+        exclude_new_projects: bool = True,
+        exclude_error_msg: str = "[测试-单文件下载验证已排除]",
+    ) -> List[Dict[str, Any]]:
+        """
+        独立下载验证：对每个平台仅下载“首页首个可用标书文件”（通过 daily_limit=1 实现）。
+
+        返回每个平台的下载结果，UI 可直接展示：
+        - 平台爬取入口（project.download_url）
+        - 本地服务器文件（project.file_path/file_format，并由 UI 生成 /tender-files/ 链接）
+
+        为避免污染后续解析/AI流程：
+        - 默认只将“本次新增的项目”置为 ProjectStatus.EXCLUDED。
+        """
+        results: List[Dict[str, Any]] = []
+
+        if enabled_platforms is None:
+            enabled_platforms = cls.list_spiders()
+        else:
+            available = set(cls.list_spiders())
+            requested = set(enabled_platforms)
+            invalid = requested - available
+            if invalid:
+                log.warning(f"以下平台不存在，将被忽略: {', '.join(invalid)}")
+            enabled_platforms = list(requested & available)
+
+        if not enabled_platforms:
+            return results
+
+        def _is_valid_file(file_path: Optional[str]) -> bool:
+            if not file_path:
+                return False
+            fp = file_path
+            if not os.path.isabs(fp):
+                fp = os.path.join(FILES_DIR, fp)
+            try:
+                return os.path.exists(fp) and os.path.getsize(fp) > 0
+            except Exception:
+                return False
+
+        def _pick_first_valid(projects: List[TenderProject]) -> tuple[Optional[TenderProject], bool]:
+            for p in projects:
+                if verify_download:
+                    if _is_valid_file(getattr(p, "file_path", None)):
+                        return p, True
+                else:
+                    if getattr(p, "file_path", None):
+                        return p, True
+            return None, False
+
+        for platform_code in enabled_platforms:
+            start_dt = datetime.now()
+            status = "success"
+            error_msg: Optional[str] = None
+            used_fallback = False
+
+            platform_info = cls.get_spider_info(platform_code) or {
+                "code": platform_code,
+                "name": platform_code,
+                "class": "",
+            }
+            platform_name = platform_info.get("name") or platform_code
+
+            selected_project: Optional[TenderProject] = None
+            new_project_ids: List[int] = []
+            # 把需要的 ORM 字段在 Session 关闭前“拷贝”成普通变量，
+            # 避免 Session 关闭后触发 refresh（你现在遇到的异常就是这个原因）。
+            project_id: Optional[str] = None
+            project_name: Optional[str] = None
+            download_url: Optional[str] = None
+            file_path: Optional[str] = None
+            file_format: Optional[str] = None
+            file_size_kb: Optional[float] = None
+            download_verified = False
+
+            try:
+                db = next(get_db())
+                try:
+                    max_id_before = db.query(func.max(TenderProject.id)).scalar() or 0
+
+                    spider = cls.create_spider(
+                        platform_code,
+                        days_before=days_before,
+                        daily_limit=per_platform_daily_limit,
+                    )
+                    spider.run()
+
+                    new_projects = db.query(TenderProject).filter(
+                        TenderProject.id > max_id_before
+                    ).all()
+                    new_project_ids = [p.id for p in new_projects if p.id is not None]
+
+                    selected_project, _download_ok = _pick_first_valid(new_projects)
+
+                    # 若本次新增没有有效文件，则回退到历史最新项目（不修改其状态）
+                    if selected_project is None and verify_download:
+                        history_projects = (
+                            db.query(TenderProject)
+                            .filter(TenderProject.site_name.like(f"%{platform_name}%"))
+                            .order_by(TenderProject.id.desc())
+                            .limit(30)
+                            .all()
+                        )
+                        selected_project, _download_ok = _pick_first_valid(history_projects)
+                        used_fallback = selected_project is not None
+
+                    # Session 仍在作用域内：把 ORM 对象字段拷贝出来
+                    if selected_project is not None:
+                        project_id = getattr(selected_project, "project_id", None)
+                        project_name = getattr(selected_project, "project_name", None)
+                        download_url = getattr(selected_project, "download_url", None)
+                        file_path = getattr(selected_project, "file_path", None)
+                        file_format = getattr(selected_project, "file_format", None)
+
+                    # 仅排除本次新增项目，避免污染后续解析/AI流程
+                    if exclude_new_projects and new_project_ids:
+                        db.query(TenderProject).filter(
+                            TenderProject.id.in_(new_project_ids)
+                        ).update(
+                            {
+                                "status": ProjectStatus.EXCLUDED,
+                                "error_msg": exclude_error_msg,
+                            },
+                            synchronize_session=False,
+                        )
+                        db.commit()
+                finally:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                status = "failed"
+                error_msg = str(e)
+                log.error(f"平台 {platform_code} 单文件下载验证失败: {error_msg}", exc_info=True)
+
+            # 生成结果字段（此处只使用上面拷贝的普通变量，不再访问 ORM 对象）
+            if verify_download:
+                try:
+                    if file_path and _is_valid_file(file_path):
+                        fp = file_path if os.path.isabs(file_path) else os.path.join(FILES_DIR, file_path)
+                        file_size_kb = os.path.getsize(fp) / 1024
+                        download_verified = True
+                except Exception:
+                    pass
+
+            if verify_download and not download_verified:
+                status = "failed"
+                if not error_msg:
+                    error_msg = "未找到有效下载文件（无 file_path 或文件不存在/大小为0）"
+
+            elapsed_ms = int((datetime.now() - start_dt).total_seconds() * 1000)
+            results.append(
+                {
+                    "platform_code": platform_info.get("code"),
+                    "platform_name": platform_info.get("name"),
+                    "spider_class": platform_info.get("class"),
+                    "status": status,
+                    "error": error_msg,
+                    "elapsed_ms": elapsed_ms,
+                    "used_fallback": used_fallback,
+                    "per_platform_daily_limit": per_platform_daily_limit,
+                    "new_projects_created": len(new_project_ids),
+                    "project_id": project_id,
+                    "project_name": project_name,
+                    "download_url": download_url,
+                    "file_path": file_path,
+                    "file_format": file_format,
+                    "file_size_kb": file_size_kb,
+                    "download_verified": download_verified if verify_download else None,
+                }
+            )
+
+        return results

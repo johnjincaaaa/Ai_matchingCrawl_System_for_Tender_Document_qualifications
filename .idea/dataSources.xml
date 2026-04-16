@@ -2,7 +2,7 @@
 <project version="4">
   <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
     <data-source source="LOCAL" name="tender_system" uuid="6032f301-2290-4a35-99bc-ac587321c091">
-      <driver-ref>sqlite.xerial</driver-ref>
+      <driver-ref>776d7c0b-20e8-4a37-bced-fe9da870541f</driver-ref>
       <synchronize>true</synchronize>
       <jdbc-driver>org.sqlite.JDBC</jdbc-driver>
       <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/tender_system.db</jdbc-url>

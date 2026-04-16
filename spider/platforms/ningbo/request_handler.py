@@ -349,6 +349,28 @@ def download_file(session: requests.Session, file_url: str, save_path: str,
                 log.error(f"文件下载超时，已达最大重试次数")
                 return False
                 
+        except requests.exceptions.HTTPError as e:
+            # 部分鉴权失败场景可能通过非 2xx 响应返回，这时刷新 access_token 再重试
+            status_code = getattr(e.response, "status_code", None)
+            if attempt < retry_times and status_code in (401, 403, 404):
+                try:
+                    new_access_token = get_access_token()
+                    if new_access_token:
+                        request_headers["access_token"] = new_access_token
+                        session.headers.update({"access_token": new_access_token})
+                        log.warning(f"检测到下载鉴权失败（HTTP {status_code}），已刷新 access_token 后重试")
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                except Exception:
+                    pass
+            if attempt < retry_times:
+                wait_time = 3 * (attempt + 1)
+                log.warning(f"文件下载HTTP错误（第{attempt+1}次），HTTP {status_code}，{wait_time}秒后重试: {str(e)}")
+                time.sleep(wait_time)
+                continue
+            log.error(f"文件下载HTTP错误，已达最大重试次数: {str(e)}")
+            return False
+                
         except requests.exceptions.ConnectionError as e:
             if attempt < retry_times:
                 wait_time = 10 * (attempt + 1)

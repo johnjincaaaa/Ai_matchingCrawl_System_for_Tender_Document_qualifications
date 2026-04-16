@@ -1702,6 +1702,7 @@ def render_sidebar():
             "标书文件管理",
             "资质库管理",
             "流程执行",
+            "爬虫测试模块",
             "分析过程可视化",
             "报告导出",
             "存储管理",
@@ -2963,7 +2964,7 @@ def run_ai_analysis_with_progress():
                 is_service, reason = ai_analyzer.is_service_project(project.evaluation_content)
 
                 # 检查是否是因为功能被禁用而返回False
-                service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
+                service_check_enabled = AI_CONFIG.get("service_check", {}).get("enable", False)
 
                 if is_service and service_check_enabled:
                     # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
@@ -3537,10 +3538,10 @@ def _start_background_task(task_type, **kwargs):
 
                                         # 检查是否是因为功能被禁用而返回False
                                         try:
-                                            service_check_enabled = config.AI_CONFIG.get("service_check", {}).get(
+                                            service_check_enabled = AI_CONFIG.get("service_check", {}).get(
                                                 "enable", False)
                                         except Exception as e:
-                                            log.warning(f"访问config.AI_CONFIG失败，使用默认值：{str(e)}")
+                                            log.warning(f"访问AI_CONFIG失败，使用默认值：{str(e)}")
                                             service_check_enabled = False  # 默认禁用服务类检查
 
                                         if is_service and service_check_enabled:
@@ -4999,7 +5000,7 @@ def run_full_process():
                         is_service, reason = ai_analyzer.is_service_project(project.evaluation_content)
 
                         # 检查是否是因为功能被禁用而返回False
-                        service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
+                        service_check_enabled = AI_CONFIG.get("service_check", {}).get("enable", False)
 
                         if is_service and service_check_enabled:
                             # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
@@ -5599,6 +5600,9 @@ def render_result_visualization():
 
                     # 检查是否有缓存的导出数据
                     if export_cache_key not in st.session_state:
+                        report_generator = get_report_generator()
+                        public_file_base_url = get_report_public_file_base_url()
+
                         # 生成导出数据（只在第一次或数据变化时生成）
                         @st.cache_data(ttl=3600, show_spinner=False)  # 缓存1小时，不显示加载动画
                         def generate_export_data_cached(projects_data):
@@ -5608,7 +5612,8 @@ def render_result_visualization():
                                 export_data.append({
                                     "项目ID": p_data['id'],
                                     "项目名称": p_data['name'],
-                                    "来源网站": p_data.get('site', ''),
+                                    "来源网站": p_data.get('source_url', ''),
+                                    "下载链接": p_data.get('download_link', ''),
                                     "发布时间": p_data.get('publish_time', ''),
                                     "文件路径": p_data.get('file_path', ''),
                                     "文件格式": p_data.get('file_format', ''),
@@ -5620,10 +5625,20 @@ def render_result_visualization():
                         # 准备项目数据（轻量级，只包含导出需要的字段）
                         projects_data = []
                         for project in recommended_projects:
+                            source_url = report_generator._resolve_source_url(
+                                project.site_name,
+                                project.download_url,
+                                getattr(project, 'project_id', None),
+                            )
+                            download_link = report_generator._tender_file_public_url(
+                                project.file_path,
+                                public_file_base_url=public_file_base_url,
+                            )
                             projects_data.append({
                                 'id': project.id,
                                 'name': project.project_name,
-                                'site': project.download_url or project.site_name or "",
+                                'source_url': source_url,
+                                'download_link': download_link,
                                 'publish_time': project.publish_time.strftime(
                                     "%Y-%m-%d %H:%M") if project.publish_time else "",
                                 'file_path': project.file_path or "",
@@ -6032,10 +6047,15 @@ def render_report_export():
     all_cities = set()
     report_generator = get_report_generator()  # 获取报告生成器实例
     for proj in all_projects:
-        if proj.region:
-            _, city = report_generator._extract_province_city(proj.region)
-            if city and city != "未知":
-                all_cities.add(city)
+        # 报告导出内部“城市”字段使用的是 report_generator._resolve_report_city，
+        # 因此这里也必须用同一套逻辑生成 cities 选项（避免“义乌市/义乌”等名字不一致导致筛选数量不同）。
+        region_text = report_generator._infer_region_from_site(
+            proj.site_name,
+            getattr(proj, "region", None),
+        )
+        city = report_generator._resolve_report_city(proj.site_name, region_text)
+        if city and city != "未知":
+            all_cities.add(city)
     all_cities = sorted(list(all_cities))
 
     # 提取所有采购类型
@@ -6091,10 +6111,16 @@ def render_report_export():
     # 城市选择
     st.markdown("**城市筛选**")
     if all_cities:
+        # 显式指定 key，避免 Streamlit 保留上一次的选择状态导致默认“未全选”
+        # key 根据 all_cities 内容计算，确保 cities 集合变化时控件会重置为默认全选。
+        import hashlib
+        cities_key_hash = hashlib.md5("|".join(all_cities).encode("utf-8")).hexdigest()
+        cities_widget_key = f"report_city_filter_{cities_key_hash}"
         selected_cities = st.multiselect(
             "选择城市（不选表示全选）",
             options=all_cities,
-            default=all_cities if len(all_cities) > 0 else []
+            default=all_cities if len(all_cities) > 0 else [],
+            key=cities_widget_key,
         )
     else:
         selected_cities = []
@@ -6693,6 +6719,132 @@ def render_task_scheduler():
         st.markdown("- 查看日志文件获取详细错误信息")
 
 
+# ====================== 爬虫测试模块 ======================
+def render_spider_download_test():
+    """渲染爬虫测试模块：逐平台下载1份首页可用标书并展示 /tender-files/ 可下载链接。"""
+    st.title("🧪 爬虫测试模块（单文件下载验证）")
+    st.markdown("---")
+
+    st.subheader("测试参数")
+    col1, col2 = st.columns(2)
+    with col1:
+        days_before = st.number_input(
+            "爬取时间范围（天）",
+            min_value=1,
+            max_value=30,
+            value=7,
+            step=1,
+            help="用于控制“仅爬取最近N天内的文件”。首页首个可用文件通常会在该范围内。",
+        )
+    with col2:
+        verify_download = st.checkbox("验证下载文件（存在且大小>0）", value=True)
+
+    start_btn = st.button("▶️ 开始：逐平台下载1份（首页首个可用）", type="primary")
+
+    # 简单防并发：避免与流程页中的爬虫同时跑
+    if st.session_state.get("spider_running", False) or st.session_state.get("spider_download_test_running", False):
+        st.warning("⚠️ 检测到爬虫正在运行中，请先停止后再执行本测试")
+        return
+
+    if not start_btn:
+        st.info("点击上方按钮开始测试。测试完成后，每个平台会展示：平台入口详情页 + 本地 /tender-files/ 下载链接。")
+        return
+
+    st.session_state["spider_download_test_running"] = True
+    try:
+        with st.spinner("正在对所有已集成平台执行单文件下载验证（可能需要数分钟）..."):
+            from spider import SpiderManager
+
+            results = SpiderManager.download_one_from_homepage_per_platform(
+                days_before=int(days_before),
+                enabled_platforms=None,  # 默认测试所有平台
+                per_platform_daily_limit=1,
+                verify_download=verify_download,
+                exclude_new_projects=True,  # 避免污染后续解析/AI流程
+                exclude_error_msg="[测试-单文件下载验证已排除]",
+            )
+
+        # 生成本地 /tender-files/ 链接用到的前缀
+        from config import FILES_DIR, TENDER_FILES_URL_PREFIX
+        from urllib.parse import quote
+        public_base_url = get_report_public_file_base_url() or ""
+        prefix = (TENDER_FILES_URL_PREFIX or "").strip().rstrip("/")
+        if prefix and not prefix.startswith("/"):
+            prefix = "/" + prefix
+
+        def _file_to_local_url(file_path: str) -> str:
+            if not file_path:
+                return ""
+            try:
+                root = os.path.abspath(os.path.normpath(FILES_DIR))
+                path = file_path
+                if not os.path.isabs(path):
+                    path = os.path.join(FILES_DIR, path)
+                path = os.path.abspath(os.path.normpath(path))
+                if not os.path.isfile(path):
+                    return ""
+                rel = os.path.relpath(path, root)
+                rel_norm = rel.replace("\\", "/")
+                enc = "/".join(quote(seg, safe="") for seg in rel_norm.split("/"))
+                if public_base_url:
+                    return f"{public_base_url}{prefix}/{enc}" if prefix else f"{public_base_url}/{enc}"
+                return f"{prefix}/{enc}" if prefix else f"/{enc}"
+            except Exception:
+                return ""
+
+        ok_count = 0
+        for r in results:
+            platform_name = r.get("platform_name") or r.get("platform_code")
+            platform_code = r.get("platform_code")
+            status = r.get("status")
+            project_name = r.get("project_name") or ""
+            file_format = r.get("file_format") or ""
+            file_size_kb = r.get("file_size_kb")
+
+            file_path = r.get("file_path")
+            local_url = _file_to_local_url(file_path) if file_path else ""
+            entry_url = r.get("download_url") or ""
+
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 2])
+                with c1:
+                    st.markdown(f"### {platform_name}（{platform_code}）")
+                    if entry_url:
+                        st.markdown(f"- 平台入口（详情页/标书展示页）：[查看]({entry_url})")
+                    else:
+                        st.markdown("- 平台入口（详情页/标书展示页）：未获取到")
+
+                    if local_url:
+                        st.markdown(f"- 本地下载链接（/tender-files/）：[下载]({local_url})")
+                    else:
+                        st.markdown("- 本地下载链接：未生成（文件不存在或file_path为空）")
+
+                    if project_name:
+                        st.caption(f"项目：{project_name}")
+                    if file_format:
+                        st.caption(f"格式：{file_format}")
+                    if file_size_kb is not None:
+                        st.caption(f"文件大小：{file_size_kb:.2f} KB")
+
+                with c2:
+                    st.markdown("### 结果")
+                    if status == "success":
+                        ok_count += 1
+                        st.success("✅ 下载验证通过")
+                    else:
+                        st.error(f"❌ {r.get('error') or '下载验证失败'}")
+                    if r.get("used_fallback"):
+                        st.warning("提示：本次新增无有效文件，已回退到历史最新项目展示。")
+                    st.caption(f"新增项目数：{r.get('new_projects_created', 0)}")
+
+        st.success(f"爬虫测试完成：成功 {ok_count}/{len(results)} 个平台")
+
+    finally:
+        # 确保状态能释放
+        if "spider_download_test_running" in st.session_state:
+            st.session_state["spider_download_test_running"] = False
+
+
 # ====================== 主程序 ======================
 def main():
     """主程序"""
@@ -6822,6 +6974,9 @@ def main():
 
         elif menu_choice == "存储管理":
             render_storage_management()
+
+        elif menu_choice == "爬虫测试模块":
+            render_spider_download_test()
 
         elif menu_choice == "定时任务":
             render_task_scheduler()
