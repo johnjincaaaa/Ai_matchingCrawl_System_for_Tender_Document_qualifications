@@ -3715,13 +3715,102 @@ def _start_background_task(task_type, **kwargs):
     return True
 
 
+def _render_excluded_projects_block(projects, key_suffix="all"):
+    """已排除项目：展示排除原因/判定信息/下载链接，支持勾选后恢复为已解析以便重新比对。"""
+    from utils.db import get_db, update_project, ProjectStatus
+
+    ks = key_suffix or "all"
+
+    st.caption(
+        "勾选被误排除的项目后点击「重新比对分析」，将把状态恢复为「已解析」。"
+        "随后在上方选择「AI资质分析」并执行。"
+        "若项目仍被自动判为服务类，请在配置中调整服务类排除策略。"
+    )
+    rows = []
+    for p in projects:
+        p_date = p.create_time or p.publish_time
+        url = (getattr(p, "download_url", None) or "").strip()
+        err = getattr(p, "error_msg", None) or ""
+        rev = getattr(p, "review_reason", None) or ""
+        name = p.project_name or ""
+        rows.append({
+            "勾选": False,
+            "ID": int(p.id),
+            "项目名称": (name[:100] + "…") if len(name) > 100 else name,
+            "来源": p.site_name or "-",
+            "文件格式": p.file_format or "-",
+            "排除原因": (err[:180] + "…") if len(err) > 180 else (err or "-"),
+            "判定原因": (rev[:180] + "…") if len(rev) > 180 else (rev or "-"),
+            "判定结果": p.final_decision or "未判定",
+            "日期": p_date.strftime("%Y-%m-%d %H:%M:%S") if p_date else "-",
+            "下载链接": url if url else "-",
+        })
+    df = pd.DataFrame(rows)
+    disabled_cols = [c for c in df.columns if c != "勾选"]
+    cc = {
+        "勾选": st.column_config.CheckboxColumn("勾选", help="误排除请勾选", default=False),
+        "ID": st.column_config.NumberColumn("ID", format="%d"),
+        "项目名称": st.column_config.TextColumn("项目名称", width="large"),
+        "排除原因": st.column_config.TextColumn("排除原因", width="large"),
+        "判定原因": st.column_config.TextColumn("判定原因", width="medium"),
+        "下载链接": st.column_config.TextColumn("下载链接", width="medium"),
+    }
+    edited = st.data_editor(
+        df,
+        column_config=cc,
+        disabled=disabled_cols,
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        key=f"process_execution_excluded_data_editor_{ks}",
+    )
+
+    btn_col1, btn_col2 = st.columns([1, 4])
+    with btn_col1:
+        do_restore = st.button(
+            "🔄 重新比对分析（已勾选）", type="primary", key=f"reanalyze_excluded_selected_{ks}"
+        )
+    with btn_col2:
+        st.caption(f"共 {len(projects)} 条已排除记录")
+
+    if do_restore:
+        try:
+            sel = edited.loc[edited["勾选"].astype(bool), "ID"]
+            selected_ids = [int(x) for x in sel.tolist()]
+        except Exception:
+            selected_ids = []
+        if not selected_ids:
+            st.warning("请先勾选需要恢复的项目")
+        else:
+            try:
+                db = next(get_db())
+                try:
+                    n_ok = 0
+                    for pid in selected_ids:
+                        if update_project(db, pid, {
+                            "status": ProjectStatus.PARSED,
+                            "error_msg": None,
+                        }):
+                            n_ok += 1
+                finally:
+                    db.close()
+                get_all_projects.clear()
+                st.success(
+                    f"已将 {n_ok} 个项目恢复为「已解析」。请在上方「选择要执行的流程」中选「AI资质分析」并点击执行。"
+                )
+                time.sleep(0.4)
+                st.rerun()
+            except Exception as e:
+                st.error(f"恢复失败：{str(e)}")
+
+
 def _render_project_status(show_refresh=True):
     """渲染项目状态显示（当日和全部项目）"""
     from utils.db import get_db, ProjectStatus, update_project
     from datetime import timedelta
 
     # 定义状态顺序（在整个函数中可用）
-    status_order = ["待处理", "已下载", "已解析", "已比对", "异常", "未知"]
+    status_order = ["待处理", "已下载", "已解析", "已比对", "异常", "已排除", "未知"]
 
     # 当日项目状态
     st.markdown("---")
@@ -3781,6 +3870,9 @@ def _render_project_status(show_refresh=True):
                                  key=lambda x: status_order.index(x) if x in status_order else len(status_order))
         for status in sorted_statuses:
             with st.expander(f"{status} ({len(projects_by_status[status])}个)", expanded=True):
+                if status == "已排除" and projects_by_status[status]:
+                    _render_excluded_projects_block(projects_by_status[status], key_suffix="today")
+                    continue
                 df_data = [{"ID": p.id, "项目名称": p.project_name, "来源": p.site_name,
                             "状态": p.status or "未知", "文件格式": p.file_format or "未知",
                             "判定结果": p.final_decision or "未完成",
@@ -3916,6 +4008,10 @@ def _render_project_status(show_refresh=True):
                         except Exception as e:
                             st.error(f"重置失败：{str(e)}")
                     st.markdown("---")
+
+                if status == "已排除" and projects_by_status[status]:
+                    _render_excluded_projects_block(projects_by_status[status], key_suffix="all")
+                    continue
 
                 df_data = []
                 for p in projects_by_status[status]:
@@ -6413,13 +6509,52 @@ def render_storage_management():
                 help="即使项目状态匹配，也保留最近N天的文件"
             )
 
-            if st.button("🗑️ 按状态清理", type="primary"):
-                if not selected_statuses:
-                    st.warning("请至少选择一个项目状态")
-                else:
-                    with st.spinner("正在清理文件..."):
-                        # 这里需要实现按状态清理的逻辑
-                        st.info("按状态清理功能开发中...")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔍 预览清理（试运行）", type="secondary", key="status_cleanup_preview"):
+                    if not selected_statuses:
+                        st.warning("请至少选择一个项目状态")
+                    else:
+                        with st.spinner("正在分析可清理的项目文件..."):
+                            stats = storage_manager.clean_by_status(
+                                status_list=selected_statuses,
+                                keep_days=keep_days,
+                                dry_run=True,
+                            )
+                            st.info(
+                                f"预览结果：匹配 {stats['projects_matched']} 个项目，"
+                                f"将删除 {stats['files_deleted']} 个文件，"
+                                f"跳过 {stats['files_skipped']} 个，"
+                                f"释放 {storage_manager.format_size(stats['files_size_freed'])} 空间"
+                            )
+                            if stats['errors']:
+                                st.warning(f"发现 {len(stats['errors'])} 个错误")
+
+            with col2:
+                if st.button("🗑️ 执行清理", type="primary", key="status_cleanup_execute"):
+                    if not selected_statuses:
+                        st.warning("请至少选择一个项目状态")
+                    else:
+                        with st.spinner("正在清理文件..."):
+                            stats = storage_manager.clean_by_status(
+                                status_list=selected_statuses,
+                                keep_days=keep_days,
+                                dry_run=False,
+                            )
+                            st.success(
+                                f"✅ 清理完成！匹配 {stats['projects_matched']} 个项目，"
+                                f"删除了 {stats['files_deleted']} 个文件，"
+                                f"跳过 {stats['files_skipped']} 个，"
+                                f"释放了 {storage_manager.format_size(stats['files_size_freed'])} 空间"
+                            )
+                            if stats['errors']:
+                                st.warning(f"清理过程中遇到 {len(stats['errors'])} 个错误")
+                            get_project_stats.clear()
+                            get_today_project_stats.clear()
+                            get_completed_projects.clear()
+                            get_all_projects.clear()
+                            time.sleep(0.5)
+                            st.rerun()
 
         with tab3:
             st.markdown("#### 清理空目录")

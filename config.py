@@ -153,7 +153,7 @@ AI_CONFIG = {
     
     # 资质关键词检查配置
     "qualification_keyword_check": {
-        "enable": True,  # 是否启用资质关键词检查（False：手动启用，需要时设为True）
+        "enable": False,  # 是否启用资质关键词检查（False：手动启用，需要时设为True）
     }
 }
 

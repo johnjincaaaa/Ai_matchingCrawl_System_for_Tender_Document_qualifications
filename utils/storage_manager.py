@@ -190,69 +190,117 @@ class StorageManager:
             log.error(f"清理空目录失败 {directory}: {str(e)}")
         return deleted_count
     
-    def clean_by_status(self, status_list: List[str], dry_run: bool = False) -> Dict:
+    def _resolve_project_file_path(self, file_path: str) -> str:
+        """将项目 file_path 解析为绝对路径"""
+        if not file_path:
+            return ""
+        if not os.path.isabs(file_path):
+            return os.path.join(self.files_dir, file_path)
+        return file_path
+
+    def _delete_path(self, path: str, dry_run: bool) -> int:
+        """删除文件或目录，返回释放的字节数"""
+        if os.path.isfile(path):
+            file_size = os.path.getsize(path)
+            if not dry_run:
+                os.remove(path)
+            return file_size
+        if os.path.isdir(path):
+            file_size = self.get_directory_size(path)
+            if not dry_run:
+                shutil.rmtree(path)
+            return file_size
+        return 0
+
+    def clean_by_status(
+        self,
+        status_list: List[str],
+        keep_days: int = 0,
+        dry_run: bool = False,
+    ) -> Dict:
         """
         根据项目状态清理文件
-        
+
         Args:
             status_list: 要清理的项目状态列表（如：["已比对", "异常"]）
+            keep_days: 即使状态匹配也保留最近N天的文件（0表示不保留）
             dry_run: 是否为试运行
-        
+
         Returns:
             清理统计信息
         """
         from utils.db import get_db, TenderProject, ProjectStatus
-        
+
         stats = {
             "files_deleted": 0,
+            "files_skipped": 0,
             "files_size_freed": 0,
             "projects_processed": 0,
-            "errors": []
+            "projects_matched": 0,
+            "errors": [],
         }
-        
+
+        db = None
         try:
+            status_enums = []
+            for status in status_list:
+                try:
+                    status_enums.append(ProjectStatus(status))
+                except ValueError:
+                    stats["errors"].append(f"无效的项目状态: {status}")
+
+            if not status_enums:
+                return stats
+
+            cutoff_date = datetime.now() - timedelta(days=keep_days) if keep_days > 0 else None
+
             db = next(get_db())
-            
-            # 查询指定状态的项目
             projects = db.query(TenderProject).filter(
-                TenderProject.status.in_([ProjectStatus[s] for s in status_list])
+                TenderProject.status.in_(status_enums)
             ).all()
-            
-            stats["projects_processed"] = len(projects)
-            
+
+            stats["projects_matched"] = len(projects)
+
             for project in projects:
-                if project.file_path:
-                    file_path = project.file_path
-                    
-                    # 处理相对路径
-                    if not os.path.isabs(file_path):
-                        file_path = os.path.join(self.files_dir, file_path)
-                    
-                    if os.path.exists(file_path):
-                        try:
-                            file_size = os.path.getsize(file_path) if os.path.isfile(file_path) else self.get_directory_size(file_path)
-                            
-                            if not dry_run:
-                                if os.path.isfile(file_path):
-                                    os.remove(file_path)
-                                elif os.path.isdir(file_path):
-                                    shutil.rmtree(file_path)
-                                
-                                log.info(f"删除项目文件: {file_path} (项目ID: {project.id})")
-                            
-                            stats["files_deleted"] += 1
-                            stats["files_size_freed"] += file_size
-                        except Exception as e:
-                            error_msg = f"删除项目文件失败 {file_path}: {str(e)}"
-                            stats["errors"].append(error_msg)
-                            log.error(error_msg)
-            
-            db.close()
+                stats["projects_processed"] += 1
+
+                if not project.file_path:
+                    stats["files_skipped"] += 1
+                    continue
+
+                file_path = self._resolve_project_file_path(project.file_path)
+                if not os.path.exists(file_path):
+                    stats["files_skipped"] += 1
+                    continue
+
+                if cutoff_date is not None:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if mtime >= cutoff_date:
+                        stats["files_skipped"] += 1
+                        continue
+
+                try:
+                    file_size = self._delete_path(file_path, dry_run)
+                    if not dry_run:
+                        log.info(
+                            f"删除项目文件: {file_path} "
+                            f"(项目ID: {project.id}, 状态: {project.status.value})"
+                        )
+
+                    stats["files_deleted"] += 1
+                    stats["files_size_freed"] += file_size
+                except Exception as e:
+                    error_msg = f"删除项目文件失败 {file_path}: {str(e)}"
+                    stats["errors"].append(error_msg)
+                    log.error(error_msg)
         except Exception as e:
             error_msg = f"根据状态清理文件失败: {str(e)}"
             stats["errors"].append(error_msg)
             log.error(error_msg)
-        
+        finally:
+            if db is not None:
+                db.close()
+
         return stats
     
     def get_disk_usage(self) -> Dict:
