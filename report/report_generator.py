@@ -168,24 +168,24 @@ class ReportGenerator:
     def _extract_province_city(self, region):
         """从region中提取省份和城市
 
-        根据aaaa.py，API返回的districtName可能是：
+        支持多种格式：
         - 市级：杭州市、宁波市等
-        - 区级：拱墅区、余杭区、临平区、上城区、滨江区等
+        - 区级：拱墅区、余杭区等
         - 县级：淳安县、桐庐县等
+        - 完整地址串：浙江省衢州市江山市、浙江省杭州市余杭区等
         """
+        import re
+
         if not region:
             return "未知", "未知"
 
-        province = "浙江省"  # 默认省份
+        province = "浙江省"
+        region = region.strip()
 
-        # 精确匹配区域名称
-        region = region.strip()  # 去除前后空格
         if region == "本地":
             return "本地", "本地"
 
-        # 浙江省的城市和区县映射（根据aaaa.py返回的实际数据）
         city_mapping = {
-            # 市级
             "浙江省本级": "浙江省本级",
             "杭州市": "杭州市",
             "宁波市": "宁波市",
@@ -199,8 +199,6 @@ class ReportGenerator:
             "台州市": "台州市",
             "丽水市": "丽水市",
             "义乌市": "义乌市",
-            "本地": "本地",
-            # 杭州市的区县（根据aaaa.py返回的数据）
             "拱墅区": "杭州市",
             "余杭区": "杭州市",
             "临平区": "杭州市",
@@ -214,7 +212,6 @@ class ReportGenerator:
             "建德市": "杭州市",
             "淳安县": "杭州市",
             "桐庐县": "杭州市",
-            # 宁波市区县
             "海曙区": "宁波市",
             "江北区": "宁波市",
             "北仑区": "宁波市",
@@ -225,7 +222,6 @@ class ReportGenerator:
             "慈溪市": "宁波市",
             "宁海县": "宁波市",
             "象山县": "宁波市",
-            # 温州区县（常见）
             "鹿城区": "温州市",
             "龙湾区": "温州市",
             "瓯海区": "温州市",
@@ -238,7 +234,6 @@ class ReportGenerator:
             "苍南县": "温州市",
             "文成县": "温州市",
             "泰顺县": "温州市",
-            # 嘉兴区县
             "南湖区": "嘉兴市",
             "秀洲区": "嘉兴市",
             "嘉善县": "嘉兴市",
@@ -246,20 +241,17 @@ class ReportGenerator:
             "海宁市": "嘉兴市",
             "平湖市": "嘉兴市",
             "桐乡市": "嘉兴市",
-            # 湖州区县
             "吴兴区": "湖州市",
             "南浔区": "湖州市",
             "德清县": "湖州市",
             "长兴县": "湖州市",
             "安吉县": "湖州市",
-            # 绍兴区县
             "越城区": "绍兴市",
             "柯桥区": "绍兴市",
             "上虞区": "绍兴市",
             "诸暨市": "绍兴市",
             "嵊州市": "绍兴市",
             "新昌县": "绍兴市",
-            # 金华区县
             "婺城区": "金华市",
             "金东区": "金华市",
             "兰溪市": "金华市",
@@ -268,19 +260,16 @@ class ReportGenerator:
             "武义县": "金华市",
             "浦江县": "金华市",
             "磐安县": "金华市",
-            # 衢州区县
             "柯城区": "衢州市",
             "衢江区": "衢州市",
             "江山市": "衢州市",
             "常山县": "衢州市",
             "开化县": "衢州市",
             "龙游县": "衢州市",
-            # 舟山区县
             "定海区": "舟山市",
             "普陀区": "舟山市",
             "岱山县": "舟山市",
             "嵊泗县": "舟山市",
-            # 台州区县
             "椒江区": "台州市",
             "黄岩区": "台州市",
             "路桥区": "台州市",
@@ -290,7 +279,6 @@ class ReportGenerator:
             "温岭市": "台州市",
             "临海市": "台州市",
             "玉环市": "台州市",
-            # 丽水区县
             "莲都区": "丽水市",
             "青田县": "丽水市",
             "缙云县": "丽水市",
@@ -300,36 +288,50 @@ class ReportGenerator:
             "庆元县": "丽水市",
             "景宁畲族自治县": "丽水市",
             "龙泉市": "丽水市",
-            # 其他可能的区县
             "无区域": "未知"
         }
 
-        # 优先精确匹配
         if region in city_mapping:
             city = city_mapping[region]
-        else:
-            # 如果精确匹配失败，尝试部分匹配
-            # 如果包含"区"或"县"，可能是区县，需要映射到对应的市
-            if "区" in region or "县" in region:
-                # 尝试匹配市级名称
-                for city_name in ["杭州市", "宁波市", "温州市", "嘉兴市", "湖州市", "绍兴市",
-                                  "金华市", "衢州市", "舟山市", "台州市", "丽水市"]:
-                    if city_name in region or region in city_name:
-                        city = city_name
-                        break
+        elif region.startswith("浙江省"):
+            rest = region[3:]
+            parts = re.findall(r"[^省市]+[市区县]", rest)
+            if len(parts) >= 2:
+                city_part = parts[0]
+                if city_part in city_mapping:
+                    city = city_mapping[city_part]
                 else:
-                    # 如果没匹配到，默认归到杭州市（因为大部分区县都在杭州市）
-                    city = "杭州市"
-            elif "市" in region:
-                # 直接是市级名称
-                city = region if region.endswith("市") else region + "市"
+                    city = city_part if city_part.endswith("市") else city_part + "市"
+            elif len(parts) == 1:
+                city_part = parts[0]
+                if city_part in city_mapping:
+                    city = city_mapping[city_part]
+                else:
+                    city = city_part
+            elif "市" in rest:
+                city = rest.split("市", 1)[0] + "市"
+                if city in city_mapping:
+                    city = city_mapping[city]
             else:
-                # 尝试部分匹配
                 city = "未知"
-                for key, value in city_mapping.items():
-                    if key in region or region in key:
-                        city = value
-                        break
+        elif "区" in region or "县" in region:
+            for city_name in ["杭州市", "宁波市", "温州市", "嘉兴市", "湖州市", "绍兴市",
+                              "金华市", "衢州市", "舟山市", "台州市", "丽水市"]:
+                if city_name in region or region in city_name:
+                    city = city_name
+                    break
+            else:
+                city = "杭州市"
+        elif "市" in region:
+            city = region if region.endswith("市") else region + "市"
+            if city in city_mapping:
+                city = city_mapping[city]
+        else:
+            city = "未知"
+            for key, value in city_mapping.items():
+                if key in region or region in key:
+                    city = value
+                    break
 
         return province, city
 

@@ -20,6 +20,30 @@ from spider.platforms.lishui.config import (
     COOKIES,
 )
 
+# 优先使用 curl_cffi（浏览器 TLS 指纹模拟，绕过反爬）；未安装时回退标准 requests
+try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+    curl_requests = None
+
+
+def create_session():
+    """创建 HTTP 会话。
+
+    根据 PLATFORM_CONFIG["use_curl_cffi"] 决定使用 curl_cffi（推荐）还是标准 requests。
+    curl_cffi 通过 impersonate 模拟真实浏览器的 TLS 指纹，可有效绕过 lsygcg.com 的反爬。
+    """
+    use_curl = PLATFORM_CONFIG.get("use_curl_cffi", False) and CURL_CFFI_AVAILABLE
+    if use_curl:
+        impersonate = PLATFORM_CONFIG.get("curl_cffi_impersonate", "chrome")
+        log.info(f"使用 curl_cffi 创建会话（impersonate={impersonate}）")
+        return curl_requests.Session(impersonate=impersonate)
+    if PLATFORM_CONFIG.get("use_curl_cffi", False) and not CURL_CFFI_AVAILABLE:
+        log.warning("配置启用了 curl_cffi 但未安装，回退到标准 requests。建议: pip install curl_cffi")
+    return requests.Session()
+
 
 def get_doc_list(
     session: requests.Session,

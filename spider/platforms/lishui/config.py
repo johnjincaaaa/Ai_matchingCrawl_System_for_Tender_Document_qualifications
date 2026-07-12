@@ -103,5 +103,9 @@ PLATFORM_CONFIG = {
     "ocr_enabled": True,
     "sid_fallback": "",
     "verification_code_fallback": "",
+    # 网络请求方案：curl_cffi 使用浏览器 TLS 指纹模拟（impersonate），绕过反爬；
+    # 标准库 requests 作为后备（被反爬拦截时可能失败）
+    "use_curl_cffi": True,
+    "curl_cffi_impersonate": "chrome",
 }
 

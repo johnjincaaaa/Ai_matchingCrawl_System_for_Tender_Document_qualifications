@@ -12,7 +12,16 @@ from spider.platforms.lishui.config import (
     API_VERIFICATION_CODE_URL,
     HEADERS_CAPTCHA,
     COOKIES,
+    PLATFORM_CONFIG,
 )
+
+# 优先使用 curl_cffi（浏览器 TLS 指纹模拟，绕过反爬）
+try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+    curl_requests = None
 
 try:
     import ddddocr
@@ -31,9 +40,19 @@ __all__ = [
     "get_verification_code_with_ocr",
     "auto_get_sid",
     "auto_get_sid_and_verification_code",
+    "create_captcha_session",
     "DDDDOCR_AVAILABLE",
     "DRISSIONPAGE_AVAILABLE",
+    "CURL_CFFI_AVAILABLE",
 ]
+
+
+def create_captcha_session():
+    """创建用于验证码请求的会话（curl_cffi 优先，回退 requests）"""
+    if PLATFORM_CONFIG.get("use_curl_cffi", False) and CURL_CFFI_AVAILABLE:
+        impersonate = PLATFORM_CONFIG.get("curl_cffi_impersonate", "chrome")
+        return curl_requests.Session(impersonate=impersonate)
+    return requests.Session()
 
 
 def get_sid_from_cookies(cookies: Dict) -> Optional[str]:
@@ -71,7 +90,9 @@ def get_verification_code_with_ocr(sid: str) -> Optional[Dict]:
         log.debug(f"获取验证码请求 - sid: {sid[:20] if sid else 'None'}..., cookies keys: {list(cookies.keys())}")
 
         data = {"params": '{"width":"100","height":"40","codeNum":"4","interferenceLine":"1","codeGuid":""}'}
-        resp = requests.post(API_VERIFICATION_CODE_URL, headers=headers, cookies=cookies, data=data, timeout=15)
+        # 使用 curl_cffi 会话以绕过 TLS 指纹反爬（配置允许且已安装时）
+        session = create_captcha_session()
+        resp = session.post(API_VERIFICATION_CODE_URL, headers=headers, cookies=cookies, data=data, timeout=15)
         resp.raise_for_status()
         result = resp.json()
         custom = result.get("custom") or {}
@@ -101,20 +122,24 @@ def get_verification_code_with_ocr(sid: str) -> Optional[Dict]:
 
 
 def auto_get_sid(detail_url: str) -> Optional[str]:
-    """自动获取 sid（需要 DrissionPage）"""
+    """自动获取 sid（需要 DrissionPage）
+
+    注意：不启用 headless 模式，以适配所有 DrissionPage 版本（部分旧版 headless 下
+    无法触发 sid 生成）。如需后台运行，请在无头显示环境（如 Linux + xvfb）部署。
+    """
     if not DRISSIONPAGE_AVAILABLE:
         log.error("DrissionPage未安装，无法自动获取sid。请安装: pip install DrissionPage")
         return None
 
-    options = ChromiumOptions()
-    options.headless()
-    page = ChromiumPage(options)
+    # 不启用 headless，适配所有 DrissionPage 版本（与 demo_lishuishi_update.py 保持一致）
+    # 如需后台运行：options = ChromiumOptions(); options.headless(); page = ChromiumPage(options)
+    page = ChromiumPage()
     try:
         log.info("正在加载目标页面...")
         page.get(detail_url)
         import time
 
-        time.sleep(3)
+        time.sleep(3)  # 超长等待，适配旧版加载慢的问题
         log.info("页面加载完成")
 
         # 点击“招标文件正文.pdf”触发 sid 生成
@@ -128,12 +153,16 @@ def auto_get_sid(detail_url: str) -> Optional[str]:
 
         put = page.ele("@id=yzm")
         if put:
-            put.input("1234")
+            put.input("adwd")
             time.sleep(1)
+            log.info("已自动输入验证码")
             confirm_btn = page.ele("@class=layui-layer-btn0")
             if confirm_btn:
                 confirm_btn.click()
                 time.sleep(2)
+                log.info("已自动点击确认按钮")
+            else:
+                log.warning("未找到确认按钮")
 
         cookies = page.cookies()
         cookie_dict = {}
@@ -151,9 +180,27 @@ def auto_get_sid(detail_url: str) -> Optional[str]:
         return sid
     except Exception as e:
         log.error(f"自动获取sid失败: {str(e)}", exc_info=True)
+        # 出错后仍尝试提取 sid（与 demo 行为一致）
+        try:
+            cookies = page.cookies()
+            cookie_dict = {}
+            if isinstance(cookies, list):
+                for c in cookies:
+                    cookie_dict[c.get("name")] = c.get("value")
+            else:
+                cookie_dict = cookies
+            sid = cookie_dict.get("sid")
+            if sid:
+                log.info(f"异常后仍提取到sid: {sid[:20]}...")
+                return sid
+        except Exception:
+            pass
         return None
     finally:
-        page.quit()
+        try:
+            page.quit()
+        except Exception:
+            pass
 
 
 def auto_get_sid_and_verification_code(detail_url: str) -> Optional[Dict]:

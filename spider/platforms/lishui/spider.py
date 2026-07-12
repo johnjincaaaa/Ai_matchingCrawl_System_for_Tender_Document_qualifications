@@ -15,12 +15,12 @@ try:
     from ...base_spider import BaseSpider
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
-    from .request_handler import get_doc_list, get_doc_detail, download_file
+    from .request_handler import get_doc_list, get_doc_detail, download_file, create_session
 except ImportError:
     from spider.base_spider import BaseSpider
     from spider.spider_manager import SpiderManager
     from spider.platforms.lishui.config import PLATFORM_CONFIG
-    from spider.platforms.lishui.request_handler import get_doc_list, get_doc_detail, download_file
+    from spider.platforms.lishui.request_handler import get_doc_list, get_doc_detail, download_file, create_session
 
 
 @SpiderManager.register
@@ -45,7 +45,7 @@ class LiShuiTenderSpider(BaseSpider):
         if self.days_before is not None:
             log.info(f"时间间隔限制：爬取最近 {self.days_before} 天内的文件")
 
-        session = requests.Session()
+        session = create_session()
         session.headers.update(self.headers_list)
         session.cookies.update(self.cookies)
 

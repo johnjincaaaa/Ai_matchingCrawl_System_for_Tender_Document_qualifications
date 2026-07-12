@@ -4528,30 +4528,21 @@ def run_spider_with_progress():
         total_count = 0
         projects = []
 
-        # 如果选择了非浙江省平台，直接调用run方法（简化处理）
-        if selected_platform_code and selected_platform_code != "zhejiang":
-            # 非浙江省平台，直接运行（进度显示简化）
-            try:
-                projects = spider.run()
-                total_count = len(projects)
-                safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
-                progress_bar.progress(1.0)
-            except Exception as e:
-                safe_streamlit_update(status_text.error, f"❌ 爬取失败: {str(e)}")
-            return
+        # 所有平台统一通过run方法执行爬取
+        # 浙江省平台的run()会调用三方政采云exe程序下载，其他平台run()各自实现下载逻辑
+        try:
+            projects = spider.run()
+            total_count = len(projects)
+            safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
+            progress_bar.progress(1.0)
+        except Exception as e:
+            safe_streamlit_update(status_text.error, f"❌ 爬取失败: {str(e)}")
+        return
 
-        # 浙江省平台使用原有的详细进度显示逻辑
-        if not hasattr(spider, 'category_codes'):
-            # 如果spider没有category_codes属性，直接运行
-            try:
-                projects = spider.run()
-                total_count = len(projects)
-                safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
-                progress_bar.progress(1.0)
-            except Exception as e:
-                safe_streamlit_update(status_text.error, f"❌ 爬取失败: {str(e)}")
-            return
-
+        # ===== 以下为旧的浙江省平台直连API爬取逻辑（已废弃） =====
+        # 旧逻辑通过 spider._download_document() 直接调用政采云API（precisionSearch）下载，
+        # 绕过了spider.run()，导致三方政采云exe程序不会被调用。
+        # 现已改为统一走 spider.run() → run_zcy_external_spider() → 政采云exe 路径。
         for category in spider.category_codes:
             # 检查总配额是否已满
             if total_count >= st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit']):

@@ -90,9 +90,9 @@ class ZheJiangTenderSpider(BaseSpider):
         }
 
         # 政采云主站登录配置（用于招标文件下载的新流程）
-        # 默认使用 demo 账号密码，建议在生产环境通过环境变量 ZCY_USERNAME / ZCY_PASSWORD 配置
-        self.zcy_username = os.getenv("ZCY_USERNAME", "qy1234567")
-        self.zcy_password = os.getenv("ZCY_PASSWORD", "wqh284704256")
+        # 建议在生产环境通过环境变量 ZCY_USERNAME / ZCY_PASSWORD 配置
+        self.zcy_username = os.getenv("ZCY_USERNAME", "wlj123456789")
+        self.zcy_password = os.getenv("ZCY_PASSWORD", "Zssd123456@")
         self.zcy_login_url = "https://login.zcygov.cn/login"
         self.zcy_session: requests.Session | None = None
 
@@ -856,19 +856,27 @@ class ZheJiangTenderSpider(BaseSpider):
         return None, None
 
     def run(self):
+        """解析政采云xlsx记录表，去重入库。"""
+        from spider.zcy_external import run_zcy_external_spider
+
+        projects = run_zcy_external_spider(
+            db=self.db,
+            daily_limit=self.daily_limit,
+            days_before=self.days_before,
+        )
+        self.crawled_count = len(projects)
+        return projects
+
+
+def _run_legacy_zhejiang_api_spider_removed(self):
         """
-        执行爬虫（优先爬取当日文件，按顺序完成每个区域/分类）
-        
-        爬取顺序：
-        1. 政府类 -> 浙江省本级当日文件（完毕）-> 杭州市当日文件（完毕）-> ... -> 所有区域完毕
-        2. 非政府类 -> 浙江省本级当日文件（完毕）-> 杭州市当日文件（完毕）-> ... -> 所有区域完毕
-        3. 达到配额即停止，不再爬取历史文件
-        
-        重要说明：
-        - 发布时间必须从API返回的publishDate字段解析（时间戳格式，需去掉后三位），如果不存在或解析失败则跳过该项目
-        - 区域名称优先使用API返回的districtName字段，如果没有则使用district_codes映射
+        [已废弃] 原政采云 API 爬取逻辑，保留方法名占位避免误引用。
+        现由 spider/zcy_external.py 替代。
         """
-        log.info(f"开始爬取浙江省招标网，总配额: {self.daily_limit}")
+        pass
+
+
+def __placeholder_for_legacy_run_end(self):
         if self.days_before is not None:
             log.info(f"时间间隔限制：爬取最近 {self.days_before} 天内的文件")
         
