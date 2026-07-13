@@ -4502,313 +4502,37 @@ def run_spider_with_progress():
         days_before = st.session_state.get("crawl_days_before", 7)  # 默认7天
         selected_platform_code = st.session_state.get('selected_platform_code', None)
 
-        # 如果选择了特定平台，使用SpiderManager创建爬虫
-        if selected_platform_code:
-            from spider import SpiderManager
-            try:
-                spider = SpiderManager.create_spider(selected_platform_code, daily_limit=spider_total,
-                                                     days_before=days_before)
-            except Exception as e:
-                st.error(f"创建爬虫失败: {str(e)}")
-                return
-        else:
-            # 使用原有的ZheJiangTenderSpider（向后兼容）
-            spider = ZheJiangTenderSpider(daily_limit=spider_total, days_before=days_before)
+        from spider import SpiderManager
 
-        # 创建session对象
-        import requests
-        session = requests.Session()
-        # 检查spider是否有headers和cookies属性（不同平台可能不同）
-        if hasattr(spider, 'headers'):
-            session.headers.update(spider.headers)
-        if hasattr(spider, 'cookies'):
-            session.cookies.update(spider.cookies)
-
-        # 修改spider的run方法以支持中断
         total_count = 0
         projects = []
 
-        # 所有平台统一通过run方法执行爬取
-        # 浙江省平台的run()会调用三方政采云exe程序下载，其他平台run()各自实现下载逻辑
         try:
-            projects = spider.run()
+            if selected_platform_code:
+                # 指定平台：仅运行该平台
+                safe_streamlit_update(
+                    status_text.info, f"📥 开始爬取平台：{selected_platform_code}"
+                )
+                spider = SpiderManager.create_spider(
+                    selected_platform_code,
+                    daily_limit=spider_total,
+                    days_before=days_before,
+                )
+                projects = spider.run()
+            else:
+                # “全部”：运行所有已注册平台（此前只跑了政采云，导致其他平台数据缺失）
+                safe_streamlit_update(status_text.info, "📥 开始爬取全部平台...")
+                projects = SpiderManager.run_all_spiders(
+                    days_before=days_before,
+                    enabled_platforms=None,
+                    total_limit=spider_total,
+                )
             total_count = len(projects)
             safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
             progress_bar.progress(1.0)
         except Exception as e:
             safe_streamlit_update(status_text.error, f"❌ 爬取失败: {str(e)}")
-        return
-
-        # ===== 以下为旧的浙江省平台直连API爬取逻辑（已废弃） =====
-        # 旧逻辑通过 spider._download_document() 直接调用政采云API（precisionSearch）下载，
-        # 绕过了spider.run()，导致三方政采云exe程序不会被调用。
-        # 现已改为统一走 spider.run() → run_zcy_external_spider() → 政采云exe 路径。
-        for category in spider.category_codes:
-            # 检查总配额是否已满
-            if total_count >= st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit']):
-                safe_streamlit_update(status_text.info,
-                                      f"📊 已达到今日爬取配额限制({total_count}/{st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])})，停止爬取")
-                break
-
-            code = category["code"]
-            name = category["name"]
-            category_count = 0
-            is_gov = name == "政府类"
-
-            safe_streamlit_update(status_text.info, f"🔍 开始爬取[{name}]分类（{code}）")
-
-            # 遍历所有区域（非政府类分类跳过区域循环）
-            if not is_gov:
-                # 非政府类直接爬取，不使用区域参数
-                district_code = None
-                district_name = "非区域"
-                # 只执行一次循环
-                districts = [(district_code, district_name)]
-            else:
-                districts = spider.district_codes.items()
-
-            for district_code, district_name in districts:
-                if total_count >= st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit']):
-                    safe_streamlit_update(status_text.info,
-                                          f"📊 已达到今日爬取配额限制({total_count}/{st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])})，停止爬取")
-                    break
-
-                page_no = 1
-                district_count = 0
-
-                safe_streamlit_update(status_text.info, f"🔍 开始爬取[{name}-{district_name}]区域（{district_code}）")
-
-                while district_count < spider.district_quota and page_no <= SPIDER_CONFIG[
-                    "zhejiang_max_pages"] and total_count < st.session_state.get('spider_total',
-                                                                                 SPIDER_CONFIG['daily_limit']):
-                    # 检查是否需要中断
-                    if not st.session_state.get('spider_running', False):
-                        safe_streamlit_update(status_text.warning, "⚠️ 爬取已中断")
-                        return False
-
-                    # 检查暂停状态
-                    while st.session_state.get('spider_paused', False):
-                        safe_streamlit_update(status_text.markdown,
-                                              '<div class="status-message">⏸️ 爬取已暂停，点击继续按钮恢复</div>',
-                                              unsafe_allow_html=True)
-                        with control_container:
-                            col1, col2 = st.columns(2)
-                            if col2.button("▶️ 继续爬取", key="resume_spider_refresh"):
-                                st.session_state['spider_paused'] = False
-                                safe_streamlit_update(status_text.markdown,
-                                                      '<div class="status-message">▶️ 恢复爬取中...</div>',
-                                                      unsafe_allow_html=True)
-                            if col1.button("❌ 中断爬取", type="secondary", key="stop_spider_refresh"):
-                                st.session_state['spider_running'] = False
-                                st.session_state['run_spider'] = False  # 中断时也重置run_spider状态
-
-                        if not st.session_state.get('spider_running', False):
-                            break
-                        time.sleep(0.5)  # 短暂休眠以减少资源占用
-
-                    if not st.session_state.get('spider_running', False):
-                        break
-
-                    # 反爬控制
-                    if page_no > 1:
-                        time.sleep(SPIDER_CONFIG["anti_crawl"]["request_interval"])
-
-                    # 获取页面数据（传递正确的session、区域参数和政府类标识）
-                    result = spider._fetch_page(session, code, page_no, district_code, is_gov)
-                    if not result or not result.get('result') or not result['result'].get('data'):
-                        safe_streamlit_update(status_text.warning,
-                                              f"[{name}-{district_name}]第{page_no}页无有效数据，停止爬取该区域")
-                        break
-
-                    # 获取数据列表
-                    items = result['result']['data'].get('data', [])
-                    if not items:
-                        safe_streamlit_update(status_text.warning,
-                                              f"[{name}-{district_name}]第{page_no}页无项目数据，继续下一页")
-                        page_no += 1
-                        continue
-
-                    # 处理项目数据
-                    for item in items:
-                        # 检查是否需要中断或达到配额
-                        if not st.session_state.get('spider_running', False):
-                            break
-                        # 优先检查总配额，然后检查分类配额
-                        total_limit = st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])
-                        if total_count >= total_limit:
-                            safe_streamlit_update(status_text.info,
-                                                  f"📊 已达到今日爬取配额限制({total_count}/{total_limit})，停止爬取")
-                            break
-                        # 政府类分类可以突破分类配额限制，只要不超过总配额
-                        if not is_gov and category_count >= spider.category_quota:
-                            safe_streamlit_update(status_text.info,
-                                                  f"📊 已达到分类爬取配额限制({category_count}/{spider.category_quota})，切换到下一个分类")
-                            break
-
-                        project_id = item.get("articleId")
-                        if not project_id or spider._is_duplicate(project_id):
-                            continue
-
-                        # 提取发布时间（使用爬虫的提取方法）
-                        publish_date, publish_date_source = spider._extract_publish_date(item, name, district_name)
-
-                        # 如果没有发布时间，跳过该项目（不使用当前时间作为后备）
-                        # 减少警告信息更新频率：每10个项目才显示一次警告
-                        if publish_date is None:
-                            if total_count % 10 == 0:  # 每10个才显示一次警告
-                                safe_streamlit_update(status_text.warning,
-                                                      f"⚠️ 跳过无发布时间的项目: {item.get('title', '未命名项目')[:50]}")
-                            continue
-
-                        # 解析发布时间：publishDate是13位毫秒时间戳，去掉后3位得到10位秒级时间戳
-                        publish_time = None
-                        publish_timestamp = None
-                        try:
-                            # 统一处理：将publishDate转换为整数，然后去掉后3位
-                            if isinstance(publish_date, (int, float)):
-                                timestamp_ms = int(publish_date)
-                            elif isinstance(publish_date,
-                                            str) and publish_date.strip() and publish_date.strip().isdigit():
-                                timestamp_ms = int(publish_date.strip())
-                            else:
-                                # 减少警告频率：每20个错误才显示一次
-                                if total_count % 20 == 0:
-                                    safe_streamlit_update(status_text.warning,
-                                                          f"⚠️ publishDate格式错误: {publish_date}，跳过该项目")
-                                continue
-
-                            # 去掉后3位，转换为10位秒级时间戳
-                            timestamp = timestamp_ms // 1000
-                            publish_time = datetime.fromtimestamp(timestamp)
-                            publish_timestamp = timestamp_ms  # 保存原始时间戳（毫秒）
-                        except (ValueError, OverflowError) as e:
-                            # 减少警告频率：每20个错误才显示一次
-                            if total_count % 20 == 0:
-                                safe_streamlit_update(status_text.warning,
-                                                      f"⚠️ 项目日期格式错误: {publish_date}, 错误: {str(e)}，跳过该项目")
-                            continue
-
-                        # 如果发布时间解析失败，跳过该项目
-                        if not publish_time:
-                            # 减少警告频率：每20个错误才显示一次
-                            if total_count % 20 == 0:
-                                safe_streamlit_update(status_text.warning,
-                                                      f"⚠️ 无法解析发布时间: {publish_date}，跳过该项目")
-                            continue
-
-                        # 更新统计信息 - 直接更新空容器
-                        stats_container.empty()
-                        with stats_container:
-                            # 进一步增加列宽，确保中文标题完整显示
-                            col1, col2, col3 = st.columns([1.8, 1.8, 2.2], gap="large")
-                            col1.metric("目标爬取数",
-                                        st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit']))
-                            col2.metric("已爬取数", category_count)
-                            col3.metric("总进度",
-                                        f"{total_count}/{st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])}")
-
-                        # 获取区域名称（优先使用API返回的districtName）
-                        api_district_name = item.get("districtName")
-                        if api_district_name:
-                            region_name = api_district_name
-                        else:
-                            region_name = district_name
-
-                        # 构建项目数据
-                        project_data = {
-                            "project_name": item.get("title", ""),
-                            "site_name": f"浙江省政府采购网-{region_name}",
-                            "publish_time": publish_time,  # 使用从API时间戳转换的发布时间
-                            "publish_timestamp": publish_timestamp,  # 保存原始时间戳（毫秒）
-                            "project_id": project_id,
-                            "region": region_name,  # 使用API返回的districtName
-                            "status": "DOWNLOADED"
-                        }
-
-                        status_text.markdown(
-                            f'<div class="status-message">📥 正在下载: {project_data["project_name"]}</div>',
-                            unsafe_allow_html=True)
-
-                        # 下载文件
-                        try:
-                            file_path, file_format = spider._download_document(project_id, project_data["project_name"],
-                                                                               session)
-                            if file_path:
-                                project_data["file_path"] = file_path
-                                project_data["file_format"] = file_format
-
-                                # 保存项目
-                                saved_project = save_project(spider.db, project_data)
-                                projects.append(saved_project)
-                                category_count += 1
-                                district_count += 1
-                                total_count += 1
-                                spider.crawled_count = total_count
-                                st.session_state['successfully_crawled'].append(project_data['project_name'])
-                                # 只保存项目ID，避免存储分离的ORM对象
-                                if 'successfully_crawled_project_ids' not in st.session_state:
-                                    st.session_state['successfully_crawled_project_ids'] = []
-                                st.session_state['successfully_crawled_project_ids'].append(saved_project.id)
-                                status_text.markdown(
-                                    f'<div class="status-message">✅ 成功: {project_data["project_name"]}（{category_count}/{spider.category_quota}）</div>',
-                                    unsafe_allow_html=True)
-                            else:
-                                st.session_state['failed_crawled'].append(f"{project_data['project_name']}（下载失败）")
-                                safe_streamlit_update(status_text.markdown,
-                                                      f'<div class="status-message">❌ 失败: {project_data["project_name"]}（下载失败）</div>',
-                                                      unsafe_allow_html=True)
-                        except Exception as e:
-                            st.session_state['failed_crawled'].append(f"{project_data['project_name']}（{str(e)[:30]}）")
-                            safe_streamlit_update(status_text.markdown,
-                                                  f'<div class="status-message">❌ 错误: {project_data["project_name"]}（{str(e)[:30]}）</div>',
-                                                  unsafe_allow_html=True)
-
-                    # 更新进度（添加短暂延迟让Streamlit有机会刷新）
-                    st.session_state['spider_current'] = total_count
-                    st.session_state['spider_progress'] = total_count / st.session_state.get('spider_total',
-                                                                                             SPIDER_CONFIG[
-                                                                                                 'daily_limit'])
-                    progress_bar.progress(min(st.session_state['spider_progress'], 1.0))
-                    time.sleep(0.1)  # 短暂延迟，让Streamlit有机会更新UI
-
-                    page_no += 1
-
-            if not st.session_state.get('spider_running', False):
-                break
-
-        spider.db.close()
-
-        if st.session_state.get('spider_running', False):
-            status_text.markdown('<div class="status-message">✅ 爬虫任务完成！</div>', unsafe_allow_html=True)
-
-            # 清除缓存，确保新爬取的项目能立即显示
-            get_all_projects.clear()
-            get_project_stats.clear()
-            get_today_project_stats.clear()
-
-            # 显示统计结果
-            with stats_container:
-                col1, col2, col3 = st.columns(3)
-                col1.metric("总目标数", st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit']))
-                col2.metric("成功爬取数", len(st.session_state['successfully_crawled']))
-                col3.metric("失败爬取数", len(st.session_state['failed_crawled']))
-
-            # 显示成功爬取的项目
-            if st.session_state['successfully_crawled']:
-                with st.expander("📋 成功爬取的项目列表", expanded=False):
-                    for project in st.session_state['successfully_crawled'][:20]:  # 限制显示前20个
-                        st.success(f"- {project}")
-                    if len(st.session_state['successfully_crawled']) > 20:
-                        st.info(f"... 还有{len(st.session_state['successfully_crawled']) - 20}个项目未显示")
-
-            # 显示失败的项目
-            if st.session_state['failed_crawled']:
-                with st.expander("❌ 爬取失败的项目", expanded=False):
-                    for failed in st.session_state['failed_crawled'][:20]:  # 限制显示前20个
-                        st.error(f"- {failed}")
-                    if len(st.session_state['failed_crawled']) > 20:
-                        st.info(f"... 还有{len(st.session_state['failed_crawled']) - 20}个项目未显示")
-
+            log.error(f"标书爬虫执行失败：{str(e)}", exc_info=True)
         return True
 
     except Exception as e:

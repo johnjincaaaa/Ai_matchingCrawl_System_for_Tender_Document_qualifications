@@ -161,7 +161,8 @@ class ReportGenerator:
             return city
         for platform_name, default_city in _PLATFORM_DEFAULT_REGION.items():
             if platform_name in sn:
-                return default_city.replace("市", "")
+                # 统一保留「市」后缀，避免同一城市出现「衢州市」与「衢州」两种标签
+                return default_city
         _, city = self._extract_province_city(region_text)
         return city
 
@@ -291,49 +292,36 @@ class ReportGenerator:
             "无区域": "未知"
         }
 
+        # 整串精确命中映射（如「浙江省本级」「杭州市」「柯城区」）
         if region in city_mapping:
-            city = city_mapping[region]
-        elif region.startswith("浙江省"):
-            rest = region[3:]
-            parts = re.findall(r"[^省市]+[市区县]", rest)
-            if len(parts) >= 2:
-                city_part = parts[0]
-                if city_part in city_mapping:
-                    city = city_mapping[city_part]
-                else:
-                    city = city_part if city_part.endswith("市") else city_part + "市"
-            elif len(parts) == 1:
-                city_part = parts[0]
-                if city_part in city_mapping:
-                    city = city_mapping[city_part]
-                else:
-                    city = city_part
-            elif "市" in rest:
-                city = rest.split("市", 1)[0] + "市"
-                if city in city_mapping:
-                    city = city_mapping[city]
-            else:
-                city = "未知"
-        elif "区" in region or "县" in region:
-            for city_name in ["杭州市", "宁波市", "温州市", "嘉兴市", "湖州市", "绍兴市",
-                              "金华市", "衢州市", "舟山市", "台州市", "丽水市"]:
-                if city_name in region or region in city_name:
-                    city = city_name
-                    break
-            else:
-                city = "杭州市"
-        elif "市" in region:
-            city = region if region.endswith("市") else region + "市"
-            if city in city_mapping:
-                city = city_mapping[city]
-        else:
-            city = "未知"
-            for key, value in city_mapping.items():
-                if key in region or region in key:
-                    city = value
-                    break
+            return province, city_mapping[region]
 
-        return province, city
+        # 去掉省前缀后，统一按「市/区/县」分段解析，
+        # 兼容有省前缀（浙江省衢州市江山市）与无省前缀（衢州市江山市）两种写法。
+        rest = region[3:] if region.startswith("浙江省") else region
+        if not rest.strip():
+            # 仅有省份、无市县信息
+            return province, "未知"
+        parts = re.findall(r"[^省市区县]+[市区县]", rest)
+
+        # 取第一个「市」级片段作为地级市；若首段是区县，则用映射回溯其地级市。
+        for part in parts:
+            if part in city_mapping:
+                return province, city_mapping[part]
+            if part.endswith("市"):
+                return province, part
+
+        # 没有「市」级片段：尝试用区县片段映射到地级市
+        for part in parts:
+            if part in city_mapping:
+                return province, city_mapping[part]
+
+        # 兜底：整串模糊匹配映射表
+        for key, value in city_mapping.items():
+            if key in region or region in key:
+                return province, value
+
+        return province, "未知"
 
     def _extract_objective_attainable_score(self, comparison_result):
         """从comparison_result中提取客观分可得分

@@ -16,18 +16,44 @@ from utils.log import log
 XLSX_NAME = "文件链接记录.xlsx"
 
 
+import re
+
+# 政采云文件名常带发布/定标日期，如「（2026.1.28定）招标文件--xxx.doc」
+_FILENAME_DATE_RE = re.compile(r"[（(]\s*(\d{4})[.\-/年](\d{1,2})[.\-/月](\d{1,2})")
+
+
 def _parse_publish_time(value) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
         return value
     text = str(value).strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
     return None
+
+
+def _publish_time_from_filename(file_name: str) -> Optional[datetime]:
+    """从政采云文件名中提取真实发布/定标日期（如「（2026.1.28定）...」）。"""
+    if not file_name:
+        return None
+    m = _FILENAME_DATE_RE.search(file_name)
+    if not m:
+        return None
+    try:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return datetime(year, month, day)
+    except ValueError:
+        return None
 
 
 def _parse_region_parts(region_text: str) -> tuple:
@@ -66,7 +92,13 @@ def _find_xlsx(output_dir: str) -> str:
     candidates = glob.glob(os.path.join(output_dir, "*.xlsx"))
     if not candidates:
         raise FileNotFoundError(f"未在 {output_dir} 找到 {XLSX_NAME}")
-    return max(candidates, key=os.path.getmtime)
+    chosen = max(candidates, key=os.path.getmtime)
+    if len(candidates) > 1:
+        log.warning(
+            f"目录中存在多个 xlsx（{len(candidates)} 个），未找到标准名「{XLSX_NAME}」，"
+            f"按最近修改时间选用: {os.path.basename(chosen)}。若发布时间异常请确认该表是否为最新。"
+        )
+    return chosen
 
 
 def _load_xlsx_rows(xlsx_path: str) -> List[dict]:
@@ -147,9 +179,13 @@ def ingest_downloaded_files(
         if ext not in allowed_ext:
             continue
 
-        publish_time = _parse_publish_time(rec.get("download_time"))
+        # 发布时间优先取文件名中的真实日期（如「（2026.1.28定）...」），
+        # 其次回退到 xlsx 的「下载时间」列（下载时间并非真实发布时间，仅作兜底）。
+        publish_time = _publish_time_from_filename(file_name)
         if not publish_time:
-            log.warning(f"跳过无下载时间的记录: {project_code} / {file_name}")
+            publish_time = _parse_publish_time(rec.get("download_time"))
+        if not publish_time:
+            log.warning(f"跳过无有效发布时间的记录: {project_code} / {file_name}")
             continue
 
         if earliest_date and publish_time.date() < earliest_date:
