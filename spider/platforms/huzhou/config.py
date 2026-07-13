@@ -85,18 +85,6 @@ PLATFORM_CONFIG = {
     "max_pages": 50,
     "page_size": 10,  # 每页显示的项目数（从HTML中观察）
     "request_interval": 2,
-    # 验证码相关配置
-    "captcha_enabled": True,  # 下载文件时需要验证码
-    "ocr_enabled": True,  # 是否启用OCR识别验证码（需要安装ddddocr和DrissionPage）
-    "max_captcha_retries": 5,  # 验证码错误最大重试次数，防止死循环
-    # 配置说明：
-    # 方式1（推荐）：手动配置备用值
-    #   - sid_fallback: 通过浏览器访问任意详情页，点击"招标文件正文.pdf"，在浏览器开发者工具中查看Cookie中的sid值
-    #   - verification_code_fallback: 可以暂时使用任意4位数字（如"1234"），实际下载时会自动获取新的验证码
-    # 方式2：启用自动获取（需要安装依赖）
-    #   - 安装: pip install ddddocr DrissionPage
-    #   - 设置: ocr_enabled = True
-    #   - 系统会自动获取sid和识别验证码
-    "sid_fallback": "",  # 备用sid（手动配置，从浏览器Cookie中获取）
-    "verification_code_fallback": "",  # 备用验证码（可以暂时使用"1234"等任意值）
+    # 下载依赖 DrissionPage(取sid) + ddddocr(识别验证码)：pip install DrissionPage ddddocr
+    "max_captcha_retries": 1,  # 验证码识别可能出错，最多重试次数
 }

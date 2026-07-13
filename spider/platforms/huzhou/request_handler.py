@@ -7,13 +7,12 @@ import os
 import requests
 import time
 import re
-import base64
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
 from utils.log import log
 from spider.platforms.huzhou.config import (
-    BASE_URL, LIST_URL_TEMPLATE, API_VERIFICATION_CODE_URL, API_DOWNLOAD_URL,
-    HEADERS_LIST, HEADERS_DETAIL, HEADERS_CAPTCHA, HEADERS_DOWNLOAD, COOKIES, PLATFORM_CONFIG
+    BASE_URL, LIST_URL_TEMPLATE, API_DOWNLOAD_URL,
+    HEADERS_LIST, HEADERS_DETAIL, HEADERS_DOWNLOAD, COOKIES, PLATFORM_CONFIG
 )
 
 
@@ -54,25 +53,11 @@ def get_doc_list(session: requests.Session, page: int = 1,
                 headers=request_headers,
                 timeout=timeout
             )
-            
-            # 检测华为 CloudWAF 拦截页（HTTP 418 或含 CloudWAF 标记的短页面）。
-            # 必须在 raise_for_status() 之前判断：418 会被 raise_for_status 抛成异常，
-            # 从而误入“网络异常重试”分支，表现为对失效 Cookie 的“死循环重试”。
-            resp_text = response.text
-            if response.status_code == 418 or (
-                len(resp_text) < 6000 and ("CloudWAF" in resp_text or "请求被识别为攻击" in resp_text)
-            ):
-                log.error(
-                    "湖州平台被 CloudWAF 拦截（HTTP %s）。当前 Cookie 已失效，"
-                    "需通过浏览器预热获取新 Cookie（安装 DrissionPage 后自动预热）。"
-                    % response.status_code
-                )
-                return "WAF_BLOCKED"
 
             response.raise_for_status()
 
             # 解析HTML
-            soup = BeautifulSoup(resp_text, 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
             projects = []
 
             # 查找所有项目项
@@ -259,69 +244,6 @@ def get_doc_detail(session: requests.Session, detail_url: str,
     return None
 
 
-def get_verification_code(session: requests.Session, sid: str,
-                          headers: Optional[Dict] = None, cookies: Optional[Dict] = None,
-                          timeout: int = 15, retry_times: int = 3) -> Optional[Dict]:
-    """
-    获取验证码
-    
-    Args:
-        session: requests.Session 对象
-        sid: 会话ID（需要从浏览器自动化获取）
-        headers: 请求头（可选）
-        cookies: Cookie（可选，需要包含sid）
-        timeout: 超时时间（秒）
-        retry_times: 重试次数
-    
-    Returns:
-        dict: {"imgCode": "...", "verificationCodeGuid": "...", "verificationCodeValue": "..."}
-        失败返回 None
-    """
-    for attempt in range(retry_times + 1):
-        try:
-            # 准备请求头
-            request_headers = headers.copy() if headers else HEADERS_CAPTCHA.copy()
-            request_cookies = cookies.copy() if cookies else {}
-            request_cookies["sid"] = sid
-            
-            # 准备请求数据
-            data = {
-                "params": '{"width":"100","height":"40","codeNum":"4","interferenceLine":"1","codeGuid":""}'
-            }
-            
-            # 执行请求
-            response = session.post(
-                API_VERIFICATION_CODE_URL,
-                headers=request_headers,
-                cookies=request_cookies,
-                data=data,
-                timeout=timeout
-            )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("custom"):
-                return result["custom"]
-            else:
-                log.warning(f"验证码响应格式异常: {result}")
-                if attempt < retry_times:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                return None
-            
-        except Exception as e:
-            if attempt < retry_times:
-                wait_time = 2 * (attempt + 1)
-                log.warning(f"获取验证码失败（第{attempt+1}次），{wait_time}秒后重试: {str(e)}")
-                time.sleep(wait_time)
-            else:
-                log.error(f"获取验证码失败，已达最大重试次数: {str(e)}")
-                return None
-    
-    return None
-
-
 def download_file(session: requests.Session, attach_guid: str, save_path: str,
                   verification_code: Optional[str] = None,
                   verification_guid: Optional[str] = None,
@@ -348,31 +270,12 @@ def download_file(session: requests.Session, attach_guid: str, save_path: str,
     """
     last_error_msg = ""
     is_captcha_error = False
-    
+
+    if not (sid and verification_code and verification_guid):
+        return {"success": False, "is_captcha_error": False, "error_msg": "缺少 sid/验证码/guid，无法下载"}
+
     for attempt in range(retry_times + 1):
         try:
-            if not verification_code:
-                if PLATFORM_CONFIG.get("verification_code_fallback"):
-                    verification_code = PLATFORM_CONFIG["verification_code_fallback"]
-                    log.info(f"使用备用验证码下载文件")
-                else:
-                    last_error_msg = "缺少验证码，无法下载文件"
-                    log.error(last_error_msg)
-                    return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
-            
-            if not verification_guid:
-                log.warning(f"verification_guid未提供，使用verification_code作为guid（可能影响成功率）")
-                verification_guid = verification_code
-            
-            if not sid:
-                if PLATFORM_CONFIG.get("sid_fallback"):
-                    sid = PLATFORM_CONFIG["sid_fallback"]
-                    log.info(f"使用备用sid下载文件")
-                else:
-                    last_error_msg = "缺少sid，无法下载文件"
-                    log.error(last_error_msg)
-                    return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
-            
             request_headers = headers.copy() if headers else HEADERS_DOWNLOAD.copy()
             
             request_cookies = {

@@ -205,7 +205,8 @@ class LiShuiTenderSpider(BaseSpider):
                     if sid and DDDDOCR_AVAILABLE:
                         from .utils import get_verification_code_with_ocr
 
-                        info = get_verification_code_with_ocr(sid)
+                        # 复用下载主 session，确保领码与下载是同一会话（否则验证码必然不匹配）
+                        info = get_verification_code_with_ocr(sid, session=session)
                         if info:
                             verification_code = info.get("code")
                             verification_guid = info.get("guid")
@@ -228,7 +229,7 @@ class LiShuiTenderSpider(BaseSpider):
                     from .utils import get_verification_code_with_ocr, DDDDOCR_AVAILABLE
 
                     if DDDDOCR_AVAILABLE:
-                        info = get_verification_code_with_ocr(sid)
+                        info = get_verification_code_with_ocr(sid, session=session)
                         if info:
                             verification_code = info.get("code")
                             verification_guid = info.get("guid")

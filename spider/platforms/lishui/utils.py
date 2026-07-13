@@ -78,8 +78,14 @@ def _build_min_cookies(sid: str) -> Dict:
     return cookies
 
 
-def get_verification_code_with_ocr(sid: str) -> Optional[Dict]:
-    """获取验证码并使用 OCR 识别，返回 {"code":..., "guid":..., "value":...}"""
+def get_verification_code_with_ocr(sid: str, session=None) -> Optional[Dict]:
+    """获取验证码并使用 OCR 识别，返回 {"code":..., "guid":..., "value":...}
+
+    关键：验证码图片与其校验值绑定在“领取验证码的那个会话”上。必须传入下载时
+    使用的同一个 session，否则服务端会认为验证码与下载会话不匹配 → 验证码验证失败。
+    这正是集成后（领码用临时 session、下载用主 session）失败、而 demo（全程共用一个
+    全局 session）却成功的根本原因。仅在未传入 session 时才回退新建（兼容旧调用）。
+    """
     if not DDDDOCR_AVAILABLE:
         log.error("ddddocr未安装，无法自动识别验证码")
         return None
@@ -90,8 +96,9 @@ def get_verification_code_with_ocr(sid: str) -> Optional[Dict]:
         log.debug(f"获取验证码请求 - sid: {sid[:20] if sid else 'None'}..., cookies keys: {list(cookies.keys())}")
 
         data = {"params": '{"width":"100","height":"40","codeNum":"4","interferenceLine":"1","codeGuid":""}'}
-        # 使用 curl_cffi 会话以绕过 TLS 指纹反爬（配置允许且已安装时）
-        session = create_captcha_session()
+        # 复用下载会话（首选）；未传入时才回退新建 curl_cffi 会话
+        if session is None:
+            session = create_captcha_session()
         resp = session.post(API_VERIFICATION_CODE_URL, headers=headers, cookies=cookies, data=data, timeout=15)
         resp.raise_for_status()
         result = resp.json()
