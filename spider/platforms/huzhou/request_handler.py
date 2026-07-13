@@ -55,12 +55,26 @@ def get_doc_list(session: requests.Session, page: int = 1,
                 timeout=timeout
             )
             
+            # 检测华为 CloudWAF 拦截页（HTTP 418 或含 CloudWAF 标记的短页面）。
+            # 必须在 raise_for_status() 之前判断：418 会被 raise_for_status 抛成异常，
+            # 从而误入“网络异常重试”分支，表现为对失效 Cookie 的“死循环重试”。
+            resp_text = response.text
+            if response.status_code == 418 or (
+                len(resp_text) < 6000 and ("CloudWAF" in resp_text or "请求被识别为攻击" in resp_text)
+            ):
+                log.error(
+                    "湖州平台被 CloudWAF 拦截（HTTP %s）。当前 Cookie 已失效，"
+                    "需通过浏览器预热获取新 Cookie（安装 DrissionPage 后自动预热）。"
+                    % response.status_code
+                )
+                return "WAF_BLOCKED"
+
             response.raise_for_status()
-            
+
             # 解析HTML
-            soup = BeautifulSoup(response.text, 'html.parser')
+            soup = BeautifulSoup(resp_text, 'html.parser')
             projects = []
-            
+
             # 查找所有项目项
             list_items = soup.find_all('li', class_='wb-data-list')
             
@@ -313,7 +327,7 @@ def download_file(session: requests.Session, attach_guid: str, save_path: str,
                   verification_guid: Optional[str] = None,
                   sid: Optional[str] = None,
                   headers: Optional[Dict] = None, cookies: Optional[Dict] = None,
-                  timeout: int = 120, retry_times: int = 3) -> bool:
+                  timeout: int = 120, retry_times: int = 2) -> Dict[str, Any]:
     """
     下载文件
     
@@ -327,55 +341,50 @@ def download_file(session: requests.Session, attach_guid: str, save_path: str,
         headers: 请求头（可选）
         cookies: Cookie（可选）
         timeout: 超时时间（秒）
-        retry_times: 重试次数
+        retry_times: 网络错误重试次数（验证码错误不重试，由上层处理）
     
     Returns:
-        成功返回 True，失败返回 False
+        dict: {"success": bool, "is_captcha_error": bool, "error_msg": str}
     """
+    last_error_msg = ""
+    is_captcha_error = False
+    
     for attempt in range(retry_times + 1):
         try:
-            # 如果没有提供验证码，尝试使用备用验证码
             if not verification_code:
                 if PLATFORM_CONFIG.get("verification_code_fallback"):
                     verification_code = PLATFORM_CONFIG["verification_code_fallback"]
                     log.info(f"使用备用验证码下载文件")
                 else:
-                    log.error(f"缺少验证码，无法下载文件")
-                    return False
+                    last_error_msg = "缺少验证码，无法下载文件"
+                    log.error(last_error_msg)
+                    return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
             
-            # 如果没有提供verification_guid，这是一个严重问题，因为guid必须从API获取
             if not verification_guid:
-                log.error(f"⚠️ verification_guid未提供！验证码验证可能失败。verification_guid必须从getVerificationCode API获取，不能使用verification_code作为guid。")
-                # 仍然尝试使用verification_code作为guid（虽然可能失败）
+                log.warning(f"verification_guid未提供，使用verification_code作为guid（可能影响成功率）")
                 verification_guid = verification_code
-                log.warning(f"使用verification_code作为verification_guid（可能失败）: {verification_guid}")
             
-            # 如果没有提供sid，尝试使用备用sid
             if not sid:
                 if PLATFORM_CONFIG.get("sid_fallback"):
                     sid = PLATFORM_CONFIG["sid_fallback"]
                     log.info(f"使用备用sid下载文件")
                 else:
-                    log.error(f"缺少sid，无法下载文件")
-                    return False
+                    last_error_msg = "缺少sid，无法下载文件"
+                    log.error(last_error_msg)
+                    return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
             
-            # 准备请求头
             request_headers = headers.copy() if headers else HEADERS_DOWNLOAD.copy()
             
-            # 重要：cookies必须和获取验证码时保持一致，只使用sid和oauth相关的cookies
-            # 不能使用其他cookies（如HWWAFSESID等），否则验证码验证会失败
-            request_cookies = cookies.copy() if cookies else {}
-            request_cookies["sid"] = sid
-            # 只添加oauth相关的cookies，确保和获取验证码时一致
-            request_cookies["oauthClientId"] = COOKIES.get("oauthClientId", "admin")
-            request_cookies["oauthPath"] = COOKIES.get("oauthPath", "http://127.0.0.1:8080/EpointWebBuilder")
-            request_cookies["oauthLoginUrl"] = COOKIES.get("oauthLoginUrl", "http://127.0.0.1:1112/membercenter/login.html?redirect_uri=")
-            request_cookies["oauthLogoutUrl"] = COOKIES.get("oauthLogoutUrl", "")
+            request_cookies = {
+                "sid": sid,
+                "oauthClientId": COOKIES.get("oauthClientId", "admin"),
+                "oauthPath": COOKIES.get("oauthPath", "http://127.0.0.1:8080/EpointWebBuilder"),
+                "oauthLoginUrl": COOKIES.get("oauthLoginUrl", "http://127.0.0.1:1112/membercenter/login.html?redirect_uri="),
+                "oauthLogoutUrl": COOKIES.get("oauthLogoutUrl", "")
+            }
             
-            # 调试日志：确保sid一致
-            log.debug(f"下载请求cookies - sid: {request_cookies.get('sid', 'None')[:20]}..., cookies keys: {list(request_cookies.keys())}")
+            log.debug(f"下载请求cookies - sid: {request_cookies.get('sid', 'None')[:20]}...")
             
-            # 准备请求参数
             params = {
                 "cmd": "getContent",
                 "attachGuid": attach_guid,
@@ -385,14 +394,16 @@ def download_file(session: requests.Session, attach_guid: str, save_path: str,
                 "verificationGuid": verification_guid
             }
             
-            # 调试日志：输出请求参数（隐藏敏感信息）
-            log.debug(f"下载请求参数 - attachGuid: {attach_guid[:20]}..., verificationCode: {verification_code}, verificationGuid: {verification_guid[:30] if verification_guid else 'None'}..., sid: {sid[:20] if sid else 'None'}...")
+            log.debug(f"下载请求参数 - verificationCode: {verification_code}, verificationGuid: {verification_guid[:30] if verification_guid else 'None'}...")
             
-            # 准备请求体
             data = '------WebKitFormBoundaryZBgd51WalrM7i5YR--\\r\\n'.encode('unicode_escape')
-            
-            # 执行请求
-            response = session.post(
+
+            # 关键：使用裸 requests.post 而非 session.post。
+            # 验证码是用只含 {sid, oauth*} 的干净 cookie 上下文获取的（见 get_verification_code_with_ocr），
+            # 若这里走 session，session.cookies 里被 run() 注入的过期 WAF/oauth cookie
+            # （HWWAFSESID/noOauthAccessToken 等）会一起发出，服务端认为验证码与会话不匹配，
+            # 100% 返回"验证码验证失败"。demo 能成功正是因为下载与取验证码用的是同一套裸 cookie。
+            response = requests.post(
                 API_DOWNLOAD_URL,
                 headers=request_headers,
                 cookies=request_cookies,
@@ -403,78 +414,77 @@ def download_file(session: requests.Session, attach_guid: str, save_path: str,
             
             response.raise_for_status()
             
-            # 检查响应内容
             content_type = response.headers.get("Content-Type", "").lower()
             content = response.content
             
-            # 判断是否为PDF文件
             is_pdf_by_content_type = "application/pdf" in content_type or "application/octet-stream" in content_type
             is_pdf_by_content = len(content) > 10 and content[:4] == b'%PDF'
             
             if is_pdf_by_content_type or is_pdf_by_content:
-                # 如果文件太小，可能是错误页面
                 if len(content) < 1000:
                     error_text = content[:500].decode('utf-8', errors='ignore') if content else ""
-                    log.warning(f"文件下载失败，文件太小（{len(content)}字节），可能是错误响应: {error_text[:200]}")
+                    last_error_msg = f"文件太小（{len(content)}字节），可能是错误响应: {error_text[:200]}"
+                    log.warning(f"文件下载失败: {last_error_msg}")
                     if attempt < retry_times:
                         time.sleep(3 * (attempt + 1))
                         continue
-                    return False
+                    return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
                 
-                # 保存文件
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 with open(save_path, 'wb') as f:
                     f.write(content)
                 
                 file_size_kb = len(content) / 1024
                 log.info(f"文件下载成功: {save_path} (大小: {file_size_kb:.2f} KB)")
-                return True
+                return {"success": True, "is_captcha_error": False, "error_msg": ""}
             else:
-                # 可能是验证码错误或其他错误
                 try:
                     error_text = content[:500].decode('utf-8', errors='ignore') if content else ""
-                    # 检查是否是验证码错误
-                    is_captcha_error = "验证码验证失败" in error_text or "validateVerificationCode" in error_text
+                    is_captcha_error = "验证码验证失败" in error_text or "验证码错误" in error_text or "validateVerificationCode" in error_text
                     if is_captcha_error:
-                        log.warning(f"验证码验证失败（第{attempt+1}次尝试），响应: {error_text[:200]}")
-                        log.info(f"当前使用的验证码: {verification_code}, guid: {verification_guid[:30] if verification_guid else 'None'}...")
+                        last_error_msg = f"验证码验证失败: {error_text[:200]}"
+                        log.warning(f"验证码验证失败，验证码: {verification_code}, guid: {verification_guid[:30] if verification_guid else 'None'}...")
+                        return {"success": False, "is_captcha_error": True, "error_msg": last_error_msg}
+                    else:
+                        last_error_msg = f"响应类型: {content_type or '(空)'}, 内容: {error_text[:200]}"
+                        log.warning(f"文件下载失败: {last_error_msg}")
                 except:
-                    error_text = f"二进制内容，长度: {len(content)}字节"
-                    is_captcha_error = False
-                
-                if not is_captcha_error:
-                    log.warning(f"文件下载失败，响应类型: {content_type or '(空)'}, 内容: {error_text[:200]}")
+                    last_error_msg = f"二进制内容，长度: {len(content)}字节"
+                    log.warning(f"文件下载失败: {last_error_msg}")
                 
                 if attempt < retry_times:
                     time.sleep(3 * (attempt + 1))
                     continue
-                return False
+                return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
             
         except requests.exceptions.Timeout as e:
+            last_error_msg = f"下载超时: {str(e)}"
             if attempt < retry_times:
                 wait_time = 5 * (attempt + 1)
                 log.warning(f"文件下载超时（第{attempt+1}次），{wait_time}秒后重试")
                 time.sleep(wait_time)
             else:
                 log.error(f"文件下载超时，已达最大重试次数")
-                return False
+                return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
                 
         except requests.exceptions.ConnectionError as e:
+            last_error_msg = f"连接错误: {str(e)}"
             if attempt < retry_times:
                 wait_time = 10 * (attempt + 1)
                 log.warning(f"文件下载连接错误（第{attempt+1}次），{wait_time}秒后重试")
                 time.sleep(wait_time)
             else:
                 log.error(f"文件下载连接错误，已达最大重试次数")
-                return False
+                return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
                 
         except Exception as e:
+            last_error_msg = f"下载异常: {str(e)}"
             if attempt < retry_times:
                 wait_time = 3 * (attempt + 1)
                 log.warning(f"文件下载异常（第{attempt+1}次），{wait_time}秒后重试: {str(e)}")
                 time.sleep(wait_time)
             else:
                 log.error(f"文件下载异常，已达最大重试次数: {str(e)}")
-                return False
+                return {"success": False, "is_captcha_error": False, "error_msg": last_error_msg}
     
-    return False
+    return {"success": False, "is_captcha_error": is_captcha_error, "error_msg": last_error_msg}

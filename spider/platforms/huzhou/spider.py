@@ -48,7 +48,13 @@ class HuZhouTenderSpider(BaseSpider):
         self.max_pages = PLATFORM_CONFIG.get("max_pages", 50)
         self.page_size = PLATFORM_CONFIG.get("page_size", 10)
         self.request_interval = PLATFORM_CONFIG.get("request_interval", 2)
-    
+
+        # 整轮复用的 sid（避免每个项目都开浏览器获取），首次获取后缓存
+        self._sid = None
+        # 连续下载失败计数：sid 失效/系统性失败时用于尽早终止，避免空跑 50 页
+        self._consecutive_dl_failures = 0
+        self._max_consecutive_dl_failures = PLATFORM_CONFIG.get("max_consecutive_dl_failures", 5)
+
     def run(self):
         """执行爬虫主逻辑"""
         log.info(f"开始爬取{self.PLATFORM_NAME}，总配额: {self.daily_limit}")
@@ -60,7 +66,12 @@ class HuZhouTenderSpider(BaseSpider):
         session = requests.Session()
         session.headers.update(self.headers_list)
         session.cookies.update(self.cookies)
-        
+
+        # CloudWAF 预热：湖州站点位于华为 CloudWAF 之后，纯 requests + 过期 Cookie 会被
+        # 直接 418 拦截。这里用一次真实浏览器访问取回新鲜 Cookie，供整轮 requests 复用，
+        # 避免为每个项目反复开浏览器（此前“死循环重试”的主因之一）。
+        self._warmup_waf(session)
+
         # 初始化
         projects = []
         total_count = 0
@@ -100,10 +111,17 @@ class HuZhouTenderSpider(BaseSpider):
                 cookies=self.cookies
             )
             
+            if items == "WAF_BLOCKED":
+                log.error(
+                    f"{self.PLATFORM_NAME}被 CloudWAF 拦截，终止本轮爬取。"
+                    f"请更新 config.py 中的 Cookie，或确保已安装 DrissionPage 以自动预热。"
+                )
+                break
+
             if items is None:
                 log.warning(f"第{page_no}页请求失败")
                 break
-            
+
             if not items:
                 log.info(f"第{page_no}页无数据，停止爬取")
                 break
@@ -139,8 +157,18 @@ class HuZhouTenderSpider(BaseSpider):
                     # 如果没有文件（找不到attachGuid或下载失败），直接跳过，不保存也不计入配额
                     if not file_path:
                         log.debug(f"项目 {project_id} 无法获取文件，跳过保存（不计入配额）")
+                        # 连续多次因系统性原因（如 sid 失效导致验证码 100% 失败）下载失败时，
+                        # 提前终止整轮，避免空跑剩余页码（此前“死循环重试”的观感来源）。
+                        if self._consecutive_dl_failures >= self._max_consecutive_dl_failures:
+                            log.error(
+                                f"连续 {self._consecutive_dl_failures} 个项目下载失败，"
+                                f"疑似 sid 失效或验证码接口异常，提前终止{self.PLATFORM_NAME}爬取。"
+                                f"请刷新 config.py 中的 sid/Cookie。"
+                            )
+                            page_no = self.max_pages + 1  # 触发外层 while 退出
+                            break
                         continue
-                    
+
                     # 只有成功下载文件的项目才保存到数据库
                     project_data["file_path"] = file_path
                     project_data["file_format"] = file_format
@@ -163,9 +191,29 @@ class HuZhouTenderSpider(BaseSpider):
         
         self.crawled_count = total_count
         log.info(f"{self.PLATFORM_NAME}爬取完成，总获取: {total_count}个项目")
-        
+
         return projects
-    
+
+    def _warmup_waf(self, session):
+        """用真实浏览器预热一次，取回可通过 CloudWAF 的新鲜 Cookie 并写入 session/self.cookies。"""
+        if not PLATFORM_CONFIG.get("ocr_enabled", False):
+            return
+        try:
+            from .utils import warmup_waf_cookies, DRISSIONPAGE_AVAILABLE
+            if not DRISSIONPAGE_AVAILABLE:
+                log.warning("未安装 DrissionPage，跳过 CloudWAF 预热，列表请求可能被 418 拦截")
+                return
+            fresh = warmup_waf_cookies(self.base_url + "/")
+            if fresh:
+                # 合并新鲜 Cookie（保留 oauth 等必要项）
+                self.cookies.update({k: v for k, v in fresh.items() if v})
+                session.cookies.update(self.cookies)
+                if fresh.get("sid"):
+                    self._sid = fresh["sid"]
+                log.info("CloudWAF 预热完成，已更新会话 Cookie")
+        except Exception as e:
+            log.warning(f"CloudWAF 预热异常（将继续尝试直连）: {str(e)}")
+
     def _parse_project(self, item, today, earliest_date):
         """
         解析项目数据
@@ -265,7 +313,6 @@ class HuZhouTenderSpider(BaseSpider):
                 log.warning(f"项目 {project_id} 缺少详情URL，跳过下载")
                 return None, None
             
-            # 获取attachGuid
             attach_guid = get_doc_detail(
                 session=session,
                 detail_url=detail_url,
@@ -274,62 +321,55 @@ class HuZhouTenderSpider(BaseSpider):
             )
             
             if not attach_guid:
-                # 静默处理：找不到attachGuid的项目直接跳过，不显示警告
                 log.debug(f"项目 {project_id} 无法获取attachGuid，跳过下载")
                 return None, None
             
-            # 构建文件保存路径
             project_name = project_data.get("project_name", "unknown")
-            # 清理文件名中的非法字符
             safe_name = "".join(c for c in project_name[:50] if c.isalnum() or c in (' ', '-', '_'))
             safe_name = safe_name.strip()
             if not safe_name:
                 safe_name = project_id
             
-            file_format = "pdf"  # 默认PDF格式
+            file_format = "pdf"
             file_name = f"{self.PLATFORM_CODE}_{project_id}_{safe_name}.{file_format}"
             file_path = os.path.join(FILES_DIR, self.PLATFORM_CODE, file_name)
             
-            # 确保目录存在
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            # 下载文件（尝试多种方式获取sid和验证码）
-            sid = None
-            verification_code = None
-            verification_guid = None
-            
-            # 方式1：如果启用了OCR，尝试自动获取sid（完整自动化）
+            # sid 复用策略：整轮只获取一次，避免每个项目都开浏览器（此前“死循环”主因）。
+            sid = self._sid
+            dddd_ocr_available = False
+
             if PLATFORM_CONFIG.get("ocr_enabled", False):
                 try:
                     from .utils import auto_get_sid, DDDDOCR_AVAILABLE, DRISSIONPAGE_AVAILABLE
-                    
-                    # 检查依赖是否安装
+                    dddd_ocr_available = DDDDOCR_AVAILABLE
+
                     if not DRISSIONPAGE_AVAILABLE:
                         log.error("OCR已启用，但DrissionPage未安装。请安装: pip install DrissionPage")
                     elif not DDDDOCR_AVAILABLE:
                         log.error("OCR已启用，但ddddocr未安装。请安装: pip install ddddocr")
-                    else:
+                    elif not sid:
+                        # 仅当尚无缓存 sid 时才开浏览器获取一次
                         log.info(f"OCR已启用，开始自动获取sid（详情页: {detail_url[:80]}...）")
                         auto_sid = auto_get_sid(detail_url)
                         if auto_sid:
                             sid = auto_sid
-                            log.info(f"✅ 自动获取sid成功: {sid[:20]}...")
+                            self._sid = auto_sid  # 缓存，供后续项目复用
+                            log.info(f"自动获取sid成功: {sid[:20]}...")
                         else:
                             log.warning("自动获取sid返回None，将尝试其他方式")
                 except ImportError as e:
                     log.error(f"导入OCR工具失败: {str(e)}。请确保已安装: pip install ddddocr DrissionPage")
                 except Exception as e:
                     log.warning(f"自动获取sid失败: {str(e)}", exc_info=True)
-            
-            # 方式2：使用配置的备用值
+
             if not sid:
                 sid = PLATFORM_CONFIG.get("sid_fallback")
-            
-            # 方式3：如果都没有，尝试从Cookie中获取sid
+
             if not sid:
                 sid = self.cookies.get("sid")
             
-            # 如果仍然没有sid，无法继续
             if not sid:
                 log.warning(
                     f"项目 {project_id} 缺少sid配置，无法下载\n"
@@ -339,75 +379,102 @@ class HuZhouTenderSpider(BaseSpider):
                 )
                 return None, None
             
-            # 关键：每次下载前重新获取验证码（验证码有时效性，必须每次重新获取）
-            if PLATFORM_CONFIG.get("ocr_enabled", False) and DDDDOCR_AVAILABLE:
-                try:
-                    from .utils import get_verification_code_with_ocr
-                    log.info(f"正在获取新的验证码（每次下载前重新获取）...")
-                    verification_info = get_verification_code_with_ocr(sid)
-                    if verification_info:
-                        verification_code = verification_info.get("code")
-                        verification_guid = verification_info.get("guid")
-                        log.info(f"✅ 验证码获取成功: {verification_code}, guid: {verification_guid[:20] if verification_guid else 'None'}...")
-                    else:
-                        log.warning("验证码获取失败，将尝试使用备用验证码")
-                except Exception as e:
-                    log.warning(f"自动获取验证码失败: {str(e)}", exc_info=True)
+            max_captcha_retries = PLATFORM_CONFIG.get("max_captcha_retries", 5)
+            captcha_attempt = 0
+            last_error = ""
             
-            # 如果验证码仍未获取，尝试使用备用验证码
-            if not verification_code:
-                verification_code = PLATFORM_CONFIG.get("verification_code_fallback")
-                if verification_code:
-                    log.info("使用备用验证码")
-                    # 注意：备用验证码通常没有guid，需要重新获取
-                    if not verification_guid and sid:
-                        try:
-                            from .utils import get_verification_code_with_ocr, DDDDOCR_AVAILABLE
-                            if DDDDOCR_AVAILABLE and PLATFORM_CONFIG.get("ocr_enabled", False):
+            while captcha_attempt <= max_captcha_retries:
+                captcha_attempt += 1
+                
+                verification_code = None
+                verification_guid = None
+                
+                if PLATFORM_CONFIG.get("ocr_enabled", False) and dddd_ocr_available:
+                    try:
+                        from .utils import get_verification_code_with_ocr
+                        log.info(f"正在获取验证码（第{captcha_attempt}次，最多{max_captcha_retries}次）...")
+                        verification_info = get_verification_code_with_ocr(sid)
+                        if verification_info:
+                            verification_code = verification_info.get("code")
+                            verification_guid = verification_info.get("guid")
+                            log.info(f"验证码获取成功: {verification_code}, guid: {verification_guid[:20] if verification_guid else 'None'}...")
+                        else:
+                            log.warning("验证码获取失败，将尝试使用备用验证码")
+                    except Exception as e:
+                        log.warning(f"自动获取验证码失败: {str(e)}", exc_info=True)
+                
+                if not verification_code:
+                    verification_code = PLATFORM_CONFIG.get("verification_code_fallback")
+                    if verification_code:
+                        log.info("使用备用验证码")
+                        if not verification_guid and sid and dddd_ocr_available and PLATFORM_CONFIG.get("ocr_enabled", False):
+                            try:
+                                from .utils import get_verification_code_with_ocr
                                 log.info("备用验证码缺少guid，尝试重新获取验证码...")
                                 verification_info = get_verification_code_with_ocr(sid)
                                 if verification_info:
                                     verification_code = verification_info.get("code")
                                     verification_guid = verification_info.get("guid")
                                     log.info(f"重新获取验证码成功: {verification_code}")
-                        except Exception as e:
-                            log.debug(f"重新获取验证码失败: {str(e)}")
-            
-            # 如果仍然缺少sid或验证码，跳过下载
-            if not sid or not verification_code:
-                log.warning(
-                    f"项目 {project_id} 缺少sid或验证码配置，无法下载。\n"
-                    f"解决方案：\n"
-                    f"1. 在 config.py 中配置 sid_fallback 和 verification_code_fallback\n"
-                    f"2. 或安装 ddddocr 和 DrissionPage，启用自动获取：\n"
-                    f"   - pip install ddddocr DrissionPage\n"
-                    f"   - 在 config.py 中设置 ocr_enabled=True\n"
-                    f"3. 或使用辅助工具手动获取（参考 spider/platforms/huzhou/utils.py）"
+                            except Exception as e:
+                                log.debug(f"重新获取验证码失败: {str(e)}")
+                
+                if not sid or not verification_code:
+                    log.warning(
+                        f"项目 {project_id} 缺少sid或验证码配置，无法下载。\n"
+                        f"解决方案：\n"
+                        f"1. 在 config.py 中配置 sid_fallback 和 verification_code_fallback\n"
+                        f"2. 或安装 ddddocr 和 DrissionPage，启用自动获取：\n"
+                        f"   - pip install ddddocr DrissionPage\n"
+                        f"   - 在 config.py 中设置 ocr_enabled=True\n"
+                        f"3. 或使用辅助工具手动获取（参考 spider/platforms/huzhou/utils.py）"
+                    )
+                    return None, None
+                
+                if not verification_guid:
+                    verification_guid = verification_code
+                    log.warning("verification_guid未设置，使用verification_code作为guid（可能影响下载成功率）")
+                
+                result = download_file(
+                    session=session,
+                    attach_guid=attach_guid,
+                    save_path=file_path,
+                    verification_code=verification_code,
+                    verification_guid=verification_guid,
+                    sid=sid,
+                    headers=None,
+                    cookies=None
                 )
-                return None, None
-            
-            # 如果没有verification_guid，使用verification_code作为guid（兼容旧逻辑，但可能影响成功率）
-            if not verification_guid:
-                verification_guid = verification_code
-                log.warning("⚠️ verification_guid未设置，使用verification_code作为guid（可能影响下载成功率）")
-            
-            success = download_file(
-                session=session,
-                attach_guid=attach_guid,
-                save_path=file_path,
-                verification_code=verification_code,
-                verification_guid=verification_guid,
-                sid=sid,
-                headers=None,  # 使用函数内部默认headers
-                cookies=self.cookies
-            )
-            
-            if success and os.path.exists(file_path):
-                log.info(f"文件下载成功: {file_path}")
-                return file_path, file_format
-            else:
-                log.warning(f"文件下载失败: {file_path}")
-                return None, None
+                
+                if result.get("success") and os.path.exists(file_path):
+                    log.info(f"文件下载成功: {file_path}")
+                    self._consecutive_dl_failures = 0  # 成功即清零系统性失败计数
+                    return file_path, file_format
+
+                if result.get("is_captcha_error"):
+                    last_error = result.get("error_msg", "验证码错误")
+                    if captcha_attempt <= max_captcha_retries:
+                        log.warning(f"验证码验证失败（第{captcha_attempt}次），将重新获取验证码后重试...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        log.error(f"验证码重试已达最大次数（{max_captcha_retries}次），放弃下载: {last_error}")
+                        break
+                else:
+                    last_error = result.get("error_msg", "未知错误")
+                    log.warning(f"文件下载失败: {last_error}")
+                    break
+
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+
+            # 走到这里说明本项目在拿到 attachGuid 后仍下载失败（验证码耗尽/其他错误），
+            # 属于系统性失败信号，计入连续失败计数供 run() 判断是否提前终止。
+            self._consecutive_dl_failures += 1
+            return None, None
             
         except Exception as e:
             log.error(f"下载文档失败: {str(e)}", exc_info=True)

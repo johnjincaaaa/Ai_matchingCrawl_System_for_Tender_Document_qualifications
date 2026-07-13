@@ -88,6 +88,7 @@ PLATFORM_CONFIG = {
     # 验证码相关配置
     "captcha_enabled": True,  # 下载文件时需要验证码
     "ocr_enabled": True,  # 是否启用OCR识别验证码（需要安装ddddocr和DrissionPage）
+    "max_captcha_retries": 5,  # 验证码错误最大重试次数，防止死循环
     # 配置说明：
     # 方式1（推荐）：手动配置备用值
     #   - sid_fallback: 通过浏览器访问任意详情页，点击"招标文件正文.pdf"，在浏览器开发者工具中查看Cookie中的sid值

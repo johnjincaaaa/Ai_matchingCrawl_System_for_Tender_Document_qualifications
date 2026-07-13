@@ -7,3 +7,23 @@
 /logs/
 /reports/
 /tender_files/
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 政采云三方程序输出目录（运行时生成）
+/政采云采购文件/
+
+# 政采云三方可执行程序（97MB，不入库）
+/政采云.exe
+
+# 湖州下载测试产物（运行 test_huzhou_download.py 生成）
+/test_download.pdf
+
+# 各平台 demo 下载产物
+spider/crawl_tests/**/doc
+spider/crawl_tests/**/doc.pdf
+spider/crawl_tests/**/*.jpg
+spider/crawl_tests/**/doc - 副本.doc

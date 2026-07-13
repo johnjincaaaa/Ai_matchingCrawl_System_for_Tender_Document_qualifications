@@ -26,15 +26,83 @@ except ImportError:
     # 只在需要时输出警告，避免每次导入都输出
 
 # 导出可用性标志，供外部检查
-# 导出可用性标志，供外部检查
 __all__ = [
     "get_sid_from_cookies",
     "get_verification_code_with_ocr",
     "auto_get_sid",
     "auto_get_sid_and_verification_code",
+    "warmup_waf_cookies",
+    "is_waf_blocked",
     "DDDDOCR_AVAILABLE",
     "DRISSIONPAGE_AVAILABLE",
 ]
+
+
+def is_waf_blocked(html: str) -> bool:
+    """判断响应是否为华为 CloudWAF 拦截页（HTTP 418 / “请求被识别为攻击行为”）。"""
+    if not html:
+        return False
+    if len(html) < 6000 and ("CloudWAF" in html or "请求被识别为攻击" in html):
+        return True
+    return False
+
+
+def warmup_waf_cookies(warm_url: str) -> Optional[Dict[str, str]]:
+    """用真实浏览器访问一次目标站点，通过华为 CloudWAF 的 JS 校验并取回有效 Cookie。
+
+    湖州平台（www.hzlscgfw.cn）在 CloudWAF 之后，纯 requests + 过期 Cookie 会被
+    直接 418 拦截。demo 之所以能下载，是因为它用 DrissionPage 打开了真实浏览器。
+    这里复用同一思路：打开一次浏览器拿到新鲜的 HWWAFSESID 等 Cookie，供后续
+    requests 复用，避免为每个项目都开一次浏览器。
+
+    Args:
+        warm_url: 用于预热的页面 URL（建议用可正常访问的详情页或站点首页）
+
+    Returns:
+        Cookie 字典（含 sid，如已产生），失败返回 None
+    """
+    if not DRISSIONPAGE_AVAILABLE:
+        log.error("DrissionPage 未安装，无法绕过 CloudWAF。请安装: pip install DrissionPage")
+        return None
+
+    import time
+
+    options = ChromiumOptions()
+    options.headless()
+    options.set_argument("--no-sandbox")
+    options.set_argument("--disable-blink-features=AutomationControlled")
+    page = ChromiumPage(options)
+    try:
+        log.info(f"CloudWAF 预热：使用浏览器访问 {warm_url[:80]}...")
+        page.get(warm_url)
+        # 给 CloudWAF 的 JS 校验留出执行时间
+        for _ in range(6):
+            time.sleep(2)
+            if not is_waf_blocked(page.html):
+                break
+        if is_waf_blocked(page.html):
+            log.warning("CloudWAF 预热后仍被拦截，可能该 IP 已被临时封禁，稍后重试")
+
+        raw = page.cookies()
+        cookie_dict: Dict[str, str] = {}
+        if isinstance(raw, list):
+            for c in raw:
+                name = c.get("name")
+                if name:
+                    cookie_dict[name] = c.get("value")
+        elif isinstance(raw, dict):
+            cookie_dict = dict(raw)
+
+        if not cookie_dict:
+            log.error("CloudWAF 预热未取到任何 Cookie")
+            return None
+        log.info(f"CloudWAF 预热成功，取回 {len(cookie_dict)} 个 Cookie")
+        return cookie_dict
+    except Exception as e:
+        log.error(f"CloudWAF 预热失败: {str(e)}", exc_info=True)
+        return None
+    finally:
+        page.quit()
 
 
 def get_sid_from_cookies(cookies: Dict) -> Optional[str]:
@@ -121,7 +189,7 @@ def get_verification_code_with_ocr(sid: str) -> Optional[Dict]:
             # 清理验证码：去除空格、换行等空白字符，转换为大写（某些验证码不区分大小写）
             recognized_code = recognized_code.strip().replace(' ', '').replace('\n', '').replace('\r', '')
             
-            log.info(f"验证码识别成功（原始: {ocr.classification(image_bytes)}, 清理后: {recognized_code}）")
+            log.info(f"验证码识别成功: {recognized_code}")
             
             return {
                 "code": recognized_code,
