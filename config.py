@@ -53,15 +53,50 @@ DB_CONFIG = {
     "db_name": os.getenv("PG_DB_NAME", "tender_system"),
 }
 
-# 政采云xlsx记录表解析配置
-# 三方程序下载根目录下的「政采云采购文件」子文件夹
-_ZCY_OUTPUT_DIR = os.getenv(
-    "ZCY_OUTPUT_DIR",
-    os.path.join(BASE_DIR, "政采云采购文件"),
-)
+# 政采云双 exe 流水线配置
+# EXE A（gui_app.exe）获取当日项目编号并复制到剪贴板；
+# EXE B（政采云.exe）粘贴编号批量下载，生成「下载记录.csv」并按编号建子文件夹。
+_ZCY_SAVE_DIR = os.getenv("ZCY_SAVE_DIR", os.path.join(FILES_DIR, "zcy"))
 ZCY_CONFIG = {
-    "output_dir": _ZCY_OUTPUT_DIR,
+    # EXE A：项目编号获取器
+    "code_exe": {
+        "path": os.path.join(BASE_DIR, "gui_app.exe"),
+        "window_title": "浙江政府采购网 - 项目编号获取",
+        # Tkinter 程序按钮无文字，改用相对坐标点击：点击前窗口会被调整到 ref_size。
+        # 坐标为按钮中心相对窗口左上角的 (x, y)。ref_size = (宽, 高)。
+        "ref_size": (918, 661),
+        "fetch_button_xy": (658, 123),   # 「获取当日项目编号」中心
+        "copy_button_xy": (808, 123),    # 「复制全部项目编号」中心
+    },
+    # EXE B：批量下载工具
+    "download_exe": {
+        "path": os.path.join(BASE_DIR, "政采云.exe"),
+        "window_title": "政采云批量下载工具 (智能解析+重试)",
+        # 坐标点击（同 EXE A）。ref_size = (宽, 高)，坐标为控件中心相对窗口左上角。
+        "ref_size": (818, 697),
+        "save_dir_xy": (366, 65),    # 「保存目录」输入框中心
+        "codes_xy": (409, 211),      # 「项目编号」文本框中心
+        "start_button_xy": (281, 325),  # 「开始批量处理」按钮中心（最左，蓝色高亮）
+    },
+    # 标书文件与记录表保存目录（= tender_files/zcy）
+    "save_dir": _ZCY_SAVE_DIR,
+    # 兼容旧字段名：解析逻辑读取 output_dir
+    "output_dir": _ZCY_SAVE_DIR,
+    "csv_name": "下载记录.csv",              # EXE B 每次生成，会被下次覆盖
+    "total_csv_name": "total_下载记录.csv",  # 累积历史表（本系统维护，不被覆盖）
     "supported_extensions": (".doc", ".docx", ".pdf"),
+    # 超时（秒）
+    "fetch_timeout": int(os.getenv("ZCY_FETCH_TIMEOUT", "300")),        # A 抓编号上限
+    "download_timeout": int(os.getenv("ZCY_DOWNLOAD_TIMEOUT", "7200")),  # B 下载上限
+    "no_activity_timeout": int(os.getenv("ZCY_NO_ACTIVITY_TIMEOUT", "180")),  # 无活动快速失败
+    "skip_gui": os.getenv("ZCY_SKIP_GUI", "false").lower() == "true",   # 调试：跳过exe直接解析
+}
+
+# 区划码（地区列）→ 城市名映射，取前4位定市；3399=省本级
+ZCY_DISTRICT_MAP = {
+    "3301": "杭州市", "3302": "宁波市", "3303": "温州市", "3304": "嘉兴市",
+    "3305": "湖州市", "3306": "绍兴市", "3307": "金华市", "3308": "衢州市",
+    "3309": "舟山市", "3310": "台州市", "3311": "丽水市", "3399": "浙江省本级",
 }
 
 # 创建目录
