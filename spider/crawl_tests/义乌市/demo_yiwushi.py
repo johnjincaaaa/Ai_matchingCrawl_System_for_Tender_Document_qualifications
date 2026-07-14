@@ -177,5 +177,5 @@ def download(doc_url):
 
 if __name__ == '__main__':
     get_doc_url(1)
-    # get_doc('d')
-    # download('https://www.ywygzc.com/hxepointwebbuilder/WebbuilderMIS/attach/downloadZtbAttach.jspx?attachGuid=2ad64248-5e83-4065-b291-d6ed82d59cf2&appUrlFlag=ztb002&siteGuid=953af23a-fbca-4465-8dd6-e06ee568aa24')
+    get_doc('d')
+    download('https://www.ywygzc.com/hxepointwebbuilder/WebbuilderMIS/attach/downloadZtbAttach.jspx?attachGuid=2ad64248-5e83-4065-b291-d6ed82d59cf2&appUrlFlag=ztb002&siteGuid=953af23a-fbca-4465-8dd6-e06ee568aa24')

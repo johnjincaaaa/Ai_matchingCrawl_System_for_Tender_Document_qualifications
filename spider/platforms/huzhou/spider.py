@@ -39,18 +39,14 @@ class HuZhouTenderSpider(BaseSpider):
         self.base_url = PLATFORM_CONFIG["base_url"]
         self.list_url_template = PLATFORM_CONFIG["list_url_template"]
         
-        # 请求配置
+        # 请求配置（HAR 逆向：全程无需 cookie/sid）
         self.headers_list = PLATFORM_CONFIG["headers_list"]
         self.headers_detail = PLATFORM_CONFIG["headers_detail"]
-        self.cookies = PLATFORM_CONFIG["cookies"]
         
         # 爬取配置
         self.max_pages = PLATFORM_CONFIG.get("max_pages", 50)
         self.page_size = PLATFORM_CONFIG.get("page_size", 10)
         self.request_interval = PLATFORM_CONFIG.get("request_interval", 2)
-
-        # 整轮复用的 sid（避免每个项目都开浏览器获取），首次获取后缓存
-        self._sid = None
 
     def run(self):
         """执行爬虫主逻辑"""
@@ -59,10 +55,9 @@ class HuZhouTenderSpider(BaseSpider):
         if self.days_before is not None:
             log.info(f"时间间隔限制：爬取最近 {self.days_before} 天内的文件")
         
-        # 创建会话
+        # 创建会话（无需 cookie，列表/详情/验证码/下载共用同一 Session）
         session = requests.Session()
         session.headers.update(self.headers_list)
-        session.cookies.update(self.cookies)
 
         # 初始化
         projects = []
@@ -100,7 +95,6 @@ class HuZhouTenderSpider(BaseSpider):
                 session=session,
                 page=page_no,
                 headers=self.headers_list,
-                cookies=self.cookies
             )
 
             if items is None:
@@ -267,79 +261,40 @@ class HuZhouTenderSpider(BaseSpider):
             if not detail_url:
                 log.warning(f"项目 {project_id} 缺少详情URL，跳过下载")
                 return None, None
-            
-            attach_guid = get_doc_detail(
+
+            # 详情页 -> 全部附件（attach_guid 保留完整 A@B，含 site_guid）
+            attachments = get_doc_detail(
                 session=session,
                 detail_url=detail_url,
                 headers=self.headers_detail,
-                cookies=self.cookies
             )
-            
-            if not attach_guid:
-                log.debug(f"项目 {project_id} 无法获取attachGuid，跳过下载")
+            if not attachments:
+                log.debug(f"项目 {project_id} 详情页无附件，跳过下载")
                 return None, None
-            
+
+            # 优先下载“招标文件正文”这类正文附件，没有则取第一个
+            keyword = PLATFORM_CONFIG.get("attach_keyword", "")
+            target = next((a for a in attachments if keyword and keyword in a["name"]), attachments[0])
+
             project_name = project_data.get("project_name", "unknown")
-            safe_name = "".join(c for c in project_name[:50] if c.isalnum() or c in (' ', '-', '_'))
-            safe_name = safe_name.strip()
+            safe_name = "".join(c for c in project_name[:50] if c.isalnum() or c in (' ', '-', '_')).strip()
             if not safe_name:
                 safe_name = project_id
-            
             file_format = "pdf"
             file_name = f"{self.PLATFORM_CODE}_{project_id}_{safe_name}.{file_format}"
             file_path = os.path.join(FILES_DIR, self.PLATFORM_CODE, file_name)
-            
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            # 与 demo 一致的下载流程：
-            #   1. sid：用浏览器点下载弹验证码框、随便填几个字提交后从 cookie 取（整轮只取一次并缓存）
-            #   2. 用 sid 领验证码图，ddddocr 识别
-            #   3. 带 sid + 验证码下载；验证码识别可能出错，重试几次
-            from .utils import auto_get_sid, get_verification_code_with_ocr, DDDDOCR_AVAILABLE, DRISSIONPAGE_AVAILABLE
 
-            if not (DRISSIONPAGE_AVAILABLE and DDDDOCR_AVAILABLE):
-                log.error("需要 DrissionPage + ddddocr 才能下载湖州标书。请安装: pip install DrissionPage ddddocr")
-                return None, None
+            # 领验证码（服务端回传答案的捷径，失败自动 OCR 兜底重试）+ 下载
+            result = download_file(
+                session=session,
+                attach=target,
+                save_path=file_path,
+                max_retry=PLATFORM_CONFIG.get("max_captcha_retries", 3),
+            )
+            if result.get("success") and os.path.exists(file_path):
+                return file_path, file_format
 
-            # 1. sid（整轮复用，首次才开浏览器）
-            if not self._sid:
-                self._sid = auto_get_sid(detail_url)
-            sid = self._sid
-            if not sid:
-                log.warning(f"项目 {project_id} 未能获取 sid，跳过下载")
-                return None, None
-
-            # 2+3. 领码识别 + 下载，验证码可能识别错，重试几次
-            max_retries = PLATFORM_CONFIG.get("max_captcha_retries", 5)
-            for attempt in range(1, max_retries + 1):
-                info = get_verification_code_with_ocr(sid)
-                if not info:
-                    log.warning(f"项目 {project_id} 领取验证码失败（第{attempt}次）")
-                    time.sleep(2)
-                    continue
-
-                result = download_file(
-                    session=session,
-                    attach_guid=attach_guid,
-                    save_path=file_path,
-                    verification_code=info["code"],
-                    verification_guid=info["guid"],
-                    sid=sid,
-                )
-
-                if result.get("success") and os.path.exists(file_path):
-                    log.info(f"文件下载成功: {file_path}")
-                    return file_path, file_format
-
-                if result.get("is_captcha_error"):
-                    log.warning(f"验证码错误（第{attempt}次），重新识别后重试...")
-                    time.sleep(2)
-                    continue
-
-                # 非验证码错误（如 sid 失效），不再重试
-                log.warning(f"项目 {project_id} 下载失败: {result.get('error_msg')}")
-                break
-
+            log.warning(f"项目 {project_id} 下载失败: {result.get('error_msg')}")
             if os.path.exists(file_path):
                 try:
                     os.remove(file_path)

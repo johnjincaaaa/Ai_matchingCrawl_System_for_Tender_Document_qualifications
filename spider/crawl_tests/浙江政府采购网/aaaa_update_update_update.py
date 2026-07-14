@@ -280,9 +280,9 @@ if __name__ == '__main__':
     # get_article_id(1)  # 这是在首页的多个数据,先拿到articla_id 去到详情页，再从详情页拿到down_articlaId
     # 单个文件的下载
     # "articleId": "35oztRwHQ01JYY8dulkEkQ==",
-    # down_articleId = get_download_articleId(articleId='uEBPPysBeVO69TPwwBIwHA==')
-    # print(down_articleId)
-    down_articleId = '330100262100010000010-ZJZC-2026-0600502'
+    down_articleId = get_download_articleId(articleId='hWpHbNVw6OyWqlP1uo91dA==')
+    print('项目编号：',down_articleId)
+    # down_articleId = '330100262100010000010-ZJZC-2026-0600502'
     # 登录获取cookie字典
     cookie_info = login()
     # 修复：创建requests会话注入cookie，传给接口函数

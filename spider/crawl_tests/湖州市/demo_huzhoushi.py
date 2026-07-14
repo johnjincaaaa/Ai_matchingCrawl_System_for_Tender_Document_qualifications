@@ -282,7 +282,7 @@ def download_pdf(verificationCode, verificationGuid,attachGuid,sid):
 
 if __name__ == '__main__':
 
-
+    # geturl()
 
     try:
         sid = auto_get_sid(url='https://www.hzlscgfw.cn/jyxx/001001/001001002/001001002001/20260119/424c0b25-09d5-479f-905d-92e8f9528dbb.html')

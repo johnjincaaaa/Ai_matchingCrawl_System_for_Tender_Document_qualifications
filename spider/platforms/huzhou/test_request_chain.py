@@ -1,9 +1,6 @@
 """湖州市平台请求链路测试
 
-只测“取列表 → 取详情(attachGuid)”环（不含下载；下载需 sid+验证码，见 test_huzhou_download.py）。
-
-站点位于华为 CloudWAF 之后：纯 requests + 过期 Cookie 可能被 418 拦截，
-若列表/详情失败，多半是 config.py 的 Cookie 失效，需从浏览器刷新。
+测“取列表 → 取详情(附件列表)”环。基于 HAR 逆向的纯 requests 实现，无需 cookie/sid/浏览器。
 
 直接运行：
     python spider/platforms/huzhou/test_request_chain.py
@@ -34,18 +31,16 @@ def test_request_chain():
     log.info("=" * 60)
 
     headers = PLATFORM_CONFIG["headers_list"]
-    cookies = PLATFORM_CONFIG["cookies"]
 
     session = requests.Session()
     session.headers.update(headers)
-    session.cookies.update(cookies)
 
     # 1. 取列表
     log.info("[1/2] 请求列表页 ...")
-    items = get_doc_list(session=session, page=1, headers=headers, cookies=cookies)
+    items = get_doc_list(session=session, page=1, headers=headers)
 
     if items is None:
-        log.error("❌ 列表请求失败（网络异常/Cookie失效/重试耗尽）")
+        log.error("❌ 列表请求失败（网络异常/重试耗尽）")
         session.close()
         return False
 
@@ -55,14 +50,16 @@ def test_request_chain():
         session.close()
         return True
 
-    # 2. 取一条详情（提取 attachGuid）
+    # 2. 取一条详情（解析附件列表：attach_guid 完整 A@B + site_guid）
     detail_url = items[0].get("url")
     log.info("[2/2] 请求首条详情 ...")
-    attach_guid = get_doc_detail(session=session, detail_url=detail_url, headers=headers, cookies=cookies)
-    if attach_guid:
-        log.info(f"✅ 详情解析成功，attachGuid: {attach_guid}")
+    attachments = get_doc_detail(session=session, detail_url=detail_url, headers=headers)
+    if attachments:
+        log.info(f"✅ 详情解析成功，附件数: {len(attachments)}")
+        for a in attachments[:3]:
+            log.info(f"    - {a['name']}  attachGuid={a['attach_guid'][:40]}... siteGuid={a['site_guid'][:12]}...")
     else:
-        log.warning("⚠️ 详情未解析到 attachGuid（可能该公告无招标文件正文.pdf，列表环已通过）")
+        log.warning("⚠️ 详情未解析到附件（可能该公告无附件，列表环已通过）")
 
     session.close()
     log.info(f"[{name}] 链路测试通过 ✅")
