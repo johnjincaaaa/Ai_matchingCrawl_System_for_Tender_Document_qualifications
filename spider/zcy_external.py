@@ -294,18 +294,60 @@ def _is_exe_process_running(exe_path: str) -> bool:
             return False
 
 
-def _ensure_exe_running(exe_path: str, window_title: str, wait_seconds: int = 30) -> int:
-    """复用优先 + 防堆叠：已有窗口直接复用；进程在跑但窗口未就绪则等待；否则启动。"""
+def _kill_exe(exe_path: str) -> None:
+    """结束该 exe 的所有进程实例（用于强制重启，确保重新读取系统当前日期）。"""
+    exe_name = os.path.basename(exe_path)
+    killed = False
+    try:
+        import psutil
+
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if proc.info.get("name") == exe_name:
+                    proc.kill()
+                    killed = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        try:
+            import subprocess
+
+            subprocess.run(
+                ["taskkill", "/F", "/IM", exe_name],
+                capture_output=True, text=True, timeout=15,
+            )
+            killed = True
+        except Exception as exc:
+            log.debug(f"结束进程失败（忽略）: {exc}")
+    if killed:
+        log.info(f"已结束旧实例: {exe_name}")
+        time.sleep(2)  # 等待进程完全退出、窗口销毁
+
+
+def _ensure_exe_running(
+    exe_path: str, window_title: str, wait_seconds: int = 30, force_restart: bool = False
+) -> int:
+    """启动/复用 exe 窗口。
+
+    force_restart=True：先结束旧实例再全新启动。用于 gui_app.exe（EXE A）——
+    它把「当日」锁定在启动那一刻，若沿用昨天遗留的实例会取到昨天的编号，
+    故每次强制重启以重新读取系统当前日期。
+    force_restart=False：复用优先 + 防堆叠（EXE B 用，避免重复启动）。
+    """
     _require_win32()
-    hwnd = _find_window(window_title)
-    if hwnd:
-        log.info(f"检测到窗口「{window_title}」已存在，复用现有实例")
-        return hwnd
+
+    if force_restart:
+        _kill_exe(exe_path)
+    else:
+        hwnd = _find_window(window_title)
+        if hwnd:
+            log.info(f"检测到窗口「{window_title}」已存在，复用现有实例")
+            return hwnd
 
     if not os.path.isfile(exe_path):
         raise FileNotFoundError(f"政采云程序不存在: {exe_path}，请确认已放入项目根目录")
 
-    if _is_exe_process_running(exe_path):
+    if not force_restart and _is_exe_process_running(exe_path):
         log.info(f"进程 {os.path.basename(exe_path)} 已在运行但窗口未就绪，等待窗口出现（不重复启动）")
     else:
         import subprocess
@@ -342,7 +384,9 @@ def fetch_project_codes() -> str:
 
     cfg = ZCY_CONFIG["code_exe"]
     ref_size = cfg.get("ref_size")
-    hwnd = _ensure_exe_running(cfg["path"], cfg["window_title"])
+    # force_restart=True：gui_app.exe 的「当日」按启动时刻确定，必须每次全新启动，
+    # 否则沿用昨天遗留的实例会取到昨天的项目编号。
+    hwnd = _ensure_exe_running(cfg["path"], cfg["window_title"], force_restart=True)
 
     # 清空剪贴板哨兵，便于判断复制是否真的写入了新内容
     sentinel = "__zcy_no_codes__"
