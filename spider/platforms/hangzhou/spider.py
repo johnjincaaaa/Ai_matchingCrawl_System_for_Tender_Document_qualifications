@@ -304,7 +304,10 @@ class HangZhouTenderSpider(BaseSpider):
             
             file_extension = target_file.get("fileExtension") or "pdf"
             filename = f"HZ_{project_name}_{safe_project_id}.{file_extension}"
-            filepath = os.path.join(FILES_DIR, filename)
+            # 与其他平台一致：文件存入 tender_files/<PLATFORM_CODE>/ 子目录，避免散落在根目录
+            file_dir = os.path.join(FILES_DIR, self.PLATFORM_CODE)
+            os.makedirs(file_dir, exist_ok=True)
+            filepath = os.path.join(file_dir, filename)
             
             # 下载文件
             if download_file(session, file_service_id, filepath, self.headers, self.cookies):

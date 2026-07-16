@@ -86,11 +86,41 @@ ZCY_CONFIG = {
     "total_csv_name": "total_下载记录.csv",  # 累积历史表（本系统维护，不被覆盖）
     "supported_extensions": (".doc", ".docx", ".pdf"),
     # 超时（秒）
-    "fetch_timeout": int(os.getenv("ZCY_FETCH_TIMEOUT", "300")),        # A 抓编号上限
-    "download_timeout": int(os.getenv("ZCY_DOWNLOAD_TIMEOUT", "7200")),  # B 下载上限
-    "no_activity_timeout": int(os.getenv("ZCY_NO_ACTIVITY_TIMEOUT", "180")),  # 无活动快速失败
-    "skip_gui": os.getenv("ZCY_SKIP_GUI", "false").lower() == "true",   # 调试：跳过exe直接解析
+    "fetch_timeout": int(os.getenv("ZCY_FETCH_TIMEOUT", "300")),          # A 抓编号上限
+    "download_timeout": int(os.getenv("ZCY_DOWNLOAD_TIMEOUT", "18000")),  # B 下载总上限=5小时
+    # 下载记录.csv 修改时间连续静默超过该秒数（默认10分钟）判定 exe 已下载完毕，break
+    "download_idle_break": int(os.getenv("ZCY_DOWNLOAD_IDLE_BREAK", "600")),
+    "skip_gui": os.getenv("ZCY_SKIP_GUI", "false").lower() == "true",     # 调试：跳过exe直接解析
 }
+
+# ===== 每机器坐标校准 =====
+# exe 的按钮坐标因机器/字体/DPI 不同而异。运行 calibrate_zcy.py 生成本地校准文件
+# zcy_coords.local.json（不进 git），其中的坐标会覆盖上面 ZCY_CONFIG 里的默认值。
+# 这样本机与服务器各存各的校准，互不冲突，换机器只需重跑校准、无需改代码。
+ZCY_COORDS_FILE = os.path.join(BASE_DIR, "zcy_coords.local.json")
+
+
+def _apply_zcy_calibration():
+    """若存在本地校准文件，用其坐标覆盖 ZCY_CONFIG 的默认坐标。"""
+    if not os.path.isfile(ZCY_COORDS_FILE):
+        return
+    try:
+        import json
+        with open(ZCY_COORDS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return
+    # 结构: {"code_exe": {"ref_size":[w,h], "fetch_button_xy":[x,y], ...}, "download_exe": {...}}
+    for exe_key in ("code_exe", "download_exe"):
+        section = data.get(exe_key)
+        if not isinstance(section, dict):
+            continue
+        for k, v in section.items():
+            if isinstance(v, list) and len(v) == 2:
+                ZCY_CONFIG[exe_key][k] = tuple(v)
+
+
+_apply_zcy_calibration()
 
 # 区划码（地区列）→ 城市名映射，取前4位定市；3399=省本级
 ZCY_DISTRICT_MAP = {

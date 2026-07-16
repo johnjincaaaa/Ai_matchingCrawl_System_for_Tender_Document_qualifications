@@ -27,3 +27,6 @@ spider/crawl_tests/**/doc
 spider/crawl_tests/**/doc.pdf
 spider/crawl_tests/**/*.jpg
 spider/crawl_tests/**/doc - 副本.doc
+
+# 政采云 exe 每机器坐标校准文件（各机器各存各的，不进 git）
+zcy_coords.local.json

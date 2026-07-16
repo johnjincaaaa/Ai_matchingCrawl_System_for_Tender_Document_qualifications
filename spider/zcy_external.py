@@ -34,9 +34,6 @@ except ImportError:  # pragma: no cover
     pyperclip = None
 
 
-COMPLETION_STABLE_ROUNDS = 3  # CSV 大小连续 N 轮不变判定下载完成
-
-
 # ============================================================
 # 一、GUI 自动化底座（win32）
 # ============================================================
@@ -385,21 +382,30 @@ def fetch_project_codes() -> str:
 # ============================================================
 # 三、EXE B：粘贴编号 → 批量下载 → 等待完成
 # ============================================================
-def _snapshot_csv_state(save_dir: str) -> Dict:
-    """记录 下载记录.csv 与子文件夹的快照，用于判断触发后是否有新活动。"""
-    csv_path = os.path.join(save_dir, ZCY_CONFIG["csv_name"])
-    mtime = size = 0.0
-    if os.path.isfile(csv_path):
-        try:
-            mtime = os.path.getmtime(csv_path)
-            size = os.path.getsize(csv_path)
-        except OSError:
-            pass
+def _latest_mtime_in_dir(root: str) -> float:
+    """返回目录树下所有文件的最新修改时间（含子文件夹里正在下载的标书 + 下载记录.csv）。
+
+    只要 exe 还在下载——无论是在追加 csv、还是在写某个大文件——最新 mtime 就会推进。
+    比只盯单个 csv 稳：大文件下载过程中它自身 mtime 持续变化，不会被误判为静默。
+    忽略本系统维护的 total_下载记录.csv，避免自我扰动。
+    """
+    total_name = ZCY_CONFIG.get("total_csv_name")
+    latest = 0.0
     try:
-        subdirs = len([d for d in os.listdir(save_dir) if os.path.isdir(os.path.join(save_dir, d))])
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for fn in filenames:
+                if fn == total_name:
+                    continue
+                fp = os.path.join(dirpath, fn)
+                try:
+                    m = os.path.getmtime(fp)
+                except OSError:
+                    continue
+                if m > latest:
+                    latest = m
     except OSError:
-        subdirs = 0
-    return {"csv_path": csv_path, "mtime": mtime, "size": size, "subdirs": subdirs}
+        pass
+    return latest
 
 
 def trigger_batch_download(codes: str) -> None:
@@ -420,72 +426,69 @@ def trigger_batch_download(codes: str) -> None:
     _fill_field_at_rel(hwnd, cfg["codes_xy"], codes, ref_size)
     log.info("已粘贴项目编号到下载工具")
 
-    before = _snapshot_csv_state(save_dir)
+    baseline_mtime = _latest_mtime_in_dir(save_dir)
     # 点击「开始批量处理」
     _click_at_rel(hwnd, cfg["start_button_xy"], ref_size)
     log.info("已点击开始批量处理，等待下载完成...")
 
-    wait_for_download_complete(save_dir, before_state=before)
+    wait_for_download_complete(save_dir, baseline_mtime=baseline_mtime)
 
 
-def wait_for_download_complete(save_dir: str, before_state: Optional[Dict] = None) -> None:
-    """轮询 下载记录.csv：出现新活动后等待其大小稳定，判定下载完成。
+def wait_for_download_complete(save_dir: str, baseline_mtime: float = 0.0) -> None:
+    """监控整个保存目录的最新修改时间，判定 exe 下载是否结束。
 
-    无活动快速失败：超过 no_activity_timeout 仍无新活动 → 判定 exe 未开始执行，抛错降级，
-    不空转到 download_timeout。
+    判定规则：
+    - 总等待上限 download_timeout（默认 5 小时）。
+    - 每轮扫描目录树下所有文件（下载记录.csv + 各子文件夹里正在写的标书），取最新 mtime。
+      只要该最新 mtime 在推进（有任何文件在被写入/追加），就认为 exe 还在下载，继续等。
+    - 当整个目录连续静默超过 download_idle_break（默认 10 分钟）没有任何文件变动，
+      判定 exe 已下载完毕，break 返回。
+    - 到达总上限仍未静默，则返回（交由后续解析已下载内容）。
+
+    比只盯单个 csv 稳：下载大文件期间该文件自身 mtime 持续变化，不会被误判为静默。
     """
     timeout = ZCY_CONFIG["download_timeout"]
-    no_activity_timeout = ZCY_CONFIG["no_activity_timeout"]
-    csv_path = os.path.join(save_dir, ZCY_CONFIG["csv_name"])
-    deadline = time.time() + timeout
+    idle_break = ZCY_CONFIG["download_idle_break"]
+    poll_interval = 15  # 轮询间隔（秒）
+
     start = time.time()
-    grace = 15
-    last_size = -1
-    stable = 0
+    deadline = start + timeout
+
+    last_mtime = _latest_mtime_in_dir(save_dir)
+    # 最近一次“检测到目录有文件变动”的时刻；初始化为现在，给 exe 启动+首次写入留时间
+    last_change_ts = time.time()
+    seen_activity = last_mtime > baseline_mtime  # 是否已观察到相对触发前的新活动
 
     while time.time() < deadline:
-        cur = _snapshot_csv_state(save_dir)
-        # 是否有新活动：CSV 被更新/新建，或子文件夹增加
-        has_activity = True
-        if before_state:
-            same = (
-                cur["mtime"] == before_state["mtime"]
-                and cur["size"] == before_state["size"]
-                and cur["subdirs"] <= before_state["subdirs"]
-            )
-            has_activity = not same
+        time.sleep(poll_interval)
+        now = time.time()
+        cur_mtime = _latest_mtime_in_dir(save_dir)
 
-        if not has_activity:
-            elapsed = time.time() - start
-            if elapsed < grace:
-                time.sleep(5)
-                continue
-            if elapsed >= no_activity_timeout:
-                raise TimeoutError(
-                    f"触发后 {int(elapsed)}s 内下载记录无任何新活动，判定政采云下载工具未开始执行"
-                    f"（检查编号是否粘贴成功/按钮是否点到/登录是否正常）"
-                )
-            log.warning(f"触发后 {int(elapsed)}s 内无新活动，继续等待（上限 {no_activity_timeout}s）")
-            time.sleep(10)
+        if cur_mtime != last_mtime:
+            # 目录里有文件被写入/更新 → exe 仍在下载
+            last_mtime = cur_mtime
+            last_change_ts = now
+            if cur_mtime > baseline_mtime:
+                seen_activity = True
+            log.info(f"检测到下载目录有文件更新，exe 仍在下载… 已等待 {int(now - start)}s")
             continue
 
-        # 有活动：等待 CSV 大小稳定
-        if os.path.isfile(csv_path):
-            try:
-                size = os.path.getsize(csv_path)
-            except OSError:
-                size = -1
-            if size == last_size and size > 0:
-                stable += 1
-                if stable >= COMPLETION_STABLE_ROUNDS:
-                    log.info(f"政采云下载完成（记录表稳定）: {csv_path}")
-                    return
+        # 目录整体无变动：计算静默时长
+        idle = now - last_change_ts
+        if idle >= idle_break:
+            if seen_activity:
+                log.info(
+                    f"下载目录已连续 {int(idle)}s（≥{idle_break}s）无任何文件变动，判定政采云下载完成。"
+                )
             else:
-                stable = 0
-                last_size = size
-        time.sleep(10)
+                log.warning(
+                    f"下载目录连续 {int(idle)}s 无文件变动且未观察到新活动，"
+                    f"可能 exe 未开始下载（编号未粘贴/按钮未点到/登录异常），停止等待。"
+                )
+            return
+        log.debug(f"下载目录静默 {int(idle)}s（阈值 {idle_break}s），继续等待…")
 
-    log.warning(f"等待政采云下载达到上限 {timeout}s，按当前已下载内容继续解析")
+    log.warning(f"等待政采云下载达到总上限 {timeout}s（5小时），按当前已下载内容继续。")
 
 
 # ============================================================
@@ -525,10 +528,34 @@ def _read_csv_rows(csv_path: str) -> List[dict]:
     return records
 
 
+def _stamp_publish_time(row: List[str], save_dir: str) -> List[str]:
+    """确保行内「发布时间」(index 3) 有值：为空时用已下载文件的 mtime 补上。
+
+    exe 生成的 下载记录.csv 发布时间列常为空；补成文件下载时间后写入 total，
+    这样系统按「爬取时间范围」筛选时才能命中。已有值则保留（历史稳定不变）。
+    """
+    # 补齐列数到 6，避免 index 越界
+    row = list(row) + [""] * (len(CSV_HEADERS) - len(row))
+    if (row[3] or "").strip():
+        return row  # 已有发布时间，保留
+    project_code = (row[0] or "").strip()
+    file_name = (row[1] or "").strip()
+    if project_code and file_name:
+        fpath = os.path.join(save_dir, project_code, file_name)
+        if os.path.isfile(fpath):
+            try:
+                dt = datetime.fromtimestamp(os.path.getmtime(fpath))
+                row[3] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except OSError:
+                pass
+    return row
+
+
 def merge_into_total(save_dir: str) -> str:
     """把本次 下载记录.csv 合并进 total_下载记录.csv（按 项目编号+文件名 去重刷新）。
 
     返回 total_下载记录.csv 路径。新行覆盖同键旧行，保留全部历史。
+    合并时为「发布时间」为空的行补上文件下载时间，便于系统按时间范围入库。
     """
     csv_path = os.path.join(save_dir, ZCY_CONFIG["csv_name"])
     total_path = os.path.join(save_dir, ZCY_CONFIG["total_csv_name"])
@@ -552,6 +579,12 @@ def merge_into_total(save_dir: str) -> str:
             k = _key(row)
             if not k[0] and not k[1]:
                 continue
+            row = _stamp_publish_time(row, save_dir)
+            # 若新行发布时间为空但历史行已有，保留历史发布时间，避免丢失
+            if k in merged and not (row[3] or "").strip():
+                old = merged[k]
+                if len(old) > 3 and (old[3] or "").strip():
+                    row[3] = old[3]
             if k not in merged:
                 order.append(k)
             merged[k] = row  # 新行覆盖旧行（刷新）
