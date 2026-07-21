@@ -29,7 +29,173 @@ from datetime import datetime, timedelta
 from collections import deque
 from utils.db import get_db, TenderProject, ProjectStatus, update_project, get_company_qualifications, get_class_a_certificates, get_class_b_rules
 
-# 定义AI服务提供商的抽象接口
+
+# 价格/报价类关键词：这类条目属主观分，不计入客观分统计（与"客观分总满分"口径一致）
+_PRICE_KEYWORDS_RE = re.compile(r'价格|报价')
+
+# 通用管理体系认证的规范化别名 -> 归一标识。用于"真实持证豁免"确定性判定：
+# 公司A类库若真实持有对应体系证书，则评分项即便要求 cnca.cn 查询验证，核验也能通过，
+# 不应被"政府官方网站备案排除规则"误杀为0分。
+_SYSTEM_CERT_ALIASES = {
+    "quality": ["质量管理体系", "iso9001", "iso 9001", "9001"],
+    "environment": ["环境管理体系", "iso14001", "iso 14001", "14001"],
+    "occupational": ["职业健康安全", "职业健康", "iso45001", "iso 45001", "45001"],
+    "itsm": ["信息技术服务管理体系", "信息技术服务管理", "iso20000", "iso 20000", "iso/iec 20000", "20000"],
+    "infosec": ["信息安全管理体系", "信息安全管理", "iso27001", "iso 27001", "iso/iec 27001", "27001"],
+}
+
+# 专业范围硬限定信号：评分项要求"认证范围须覆盖某具体专业领域"时，通用体系证书未必覆盖，
+# 不能确定性豁免（交由AI/人工判定），故命中这些信号的条目不自动救回。
+_SCOPE_RESTRICTION_RE = re.compile(
+    r'认证范围|范围包含|范围涵盖|范围需|范围须|范围应|范围含|覆盖.{0,8}(服务|业务|领域|生产|销售|制造)'
+)
+
+
+def _held_system_cert_keys(held_cert_names):
+    """把公司A类库证书名列表归一为体系标识集合（quality/environment/...）。"""
+    joined = " ".join(held_cert_names).lower()
+    keys = set()
+    for key, aliases in _SYSTEM_CERT_ALIASES.items():
+        if any(a in joined for a in aliases):
+            keys.add(key)
+    return keys
+
+
+def _block_requires_only_held_certs(block, held_keys):
+    """判断某客观分条目块是否属于"真实持证豁免"情形。
+
+    返回 True 的条件（全部满足）：
+    1. 条目要求的是通用管理体系认证（块中命中至少一个体系别名）；
+    2. 块中命中的体系认证，全部落在公司真实持有的 held_keys 内（不含公司没有的证书，
+       如食品安全/HACCP/知识产权体系或具体产品认证）——避免"混合捆绑"里公司缺证的子项被误救；
+    3. 未出现专业范围硬限定（认证范围须覆盖IDC/无线电/垃圾清运/软件开发等）。
+
+    命中即视为：该条目所需证书公司真实持有、cnca 核验可通过，应判满足。
+    """
+    low = block.lower()
+    # 块中出现了哪些体系认证
+    mentioned = set()
+    for key, aliases in _SYSTEM_CERT_ALIASES.items():
+        if any(a in low for a in aliases):
+            mentioned.add(key)
+    if not mentioned:
+        return False  # 不是体系认证类条目，不适用本豁免
+    # 出现了公司没有的体系认证信号（如食品安全体系/HACCP/知识产权管理体系）-> 属混合缺证，不整体救回
+    if re.search(r'食品安全管理体系|haccp|知识产权管理体系|能源管理体系|保密|隐私信息|业务连续性', low):
+        return False
+    # 存在专业范围硬限定 -> 不确定覆盖，不自动救回
+    if _SCOPE_RESTRICTION_RE.search(block):
+        return False
+    # 块中提到的体系认证必须全部是公司真实持有的
+    return mentioned.issubset(held_keys)
+
+
+def _postcheck_objective_score(comparison_result, held_cert_names=None):
+    """对AI比对结果做后校验，返回 (逐条累加的可得分, 逐条累加满分, 被强制置0的矛盾条目列表, 客观分条目数, 被豁免救回的条目列表)。
+
+    校验四类模型不可靠之处：
+    1. 排除规则自检=是 但综合判定却是"满足" -> 强制该条目置0（矛盾条目）
+    2. 模型自己写的"客观分可得分"汇总可能算错 -> 用逐条累加值代替
+    3. 模型有时把价格/报价条目错列为客观分条目 -> 累加时跳过，避免gain虚高、丢分被抹平
+    4. 【真实持证豁免】模型把"公司真实持有的通用体系认证"因要求cnca查询而误触发排除判0
+       -> 当条目所需体系证书公司确实持有、且无专业范围硬限定时，救回为满分（防批量误杀）
+    """
+    held_keys = _held_system_cert_keys(held_cert_names or [])
+
+    # 按"【客观分条目N：...】"切分为条目块（主观分说明块不含"综合判定"，天然被跳过）
+    blocks = re.split(r'(?=【客观分条目\s*\d+)', comparison_result)
+    total_gain = 0.0      # 逐条累加的可得分（已排除价格类条目）
+    total_full = 0.0      # 逐条累加的满分（已排除价格类条目，供参考）
+    conflicts = []        # 触发排除规则却判满足的条目名
+    rescued = []          # 因真实持证豁免被救回的条目名
+    item_count = 0        # 客观分条目数（0则说明未提取到任何评分项）
+
+    for block in blocks:
+        m_head = re.match(r'【客观分条目\s*\d+[：:]\s*([^】]*)】', block)
+        if not m_head:
+            continue  # 非条目块（如评分项列表、最终判定）跳过
+        item_name = m_head.group(1).strip()
+        item_count += 1
+
+        # 价格/报价条目属主观分，客观分总满分已将其排除；此处也必须跳过，否则gain虚高
+        if _PRICE_KEYWORDS_RE.search(item_name):
+            continue
+
+        # 该条目满分：优先取"满分：X分"，否则用"可得分数"上限推断
+        m_full = re.search(r'满分[：: ]*([0-9]+\.?[0-9]*)\s*分?', block)
+        full_score = float(m_full.group(1)) if m_full else 0.0
+
+        # 综合判定里的"可得分数"（已改为单一数字，但兼容旧的"X分/0分"）
+        m_gain = re.search(r'可得分数[：: ]*([0-9]+\.?[0-9]*)', block)
+        gain_score = float(m_gain.group(1)) if m_gain else 0.0
+
+        # 排除规则自检字段；无该字段时，退回用文本是否出现"触发...排除规则"判断
+        m_self = re.search(r'排除规则自检[：: ]*([是否])', block)
+        if m_self:
+            excluded = (m_self.group(1) == '是')
+        else:
+            excluded = bool(re.search(r'触发[^，。\n]*排除规则', block))
+
+        # 【真实持证豁免】优先级最高：触发排除且判0，但所需体系证书公司真实持有 -> 救回满分
+        if excluded and gain_score <= 0 and held_keys and \
+                _block_requires_only_held_certs(block, held_keys):
+            gain_score = full_score
+            rescued.append(item_name)
+        # 矛盾修正：触发排除却给了分（且未被豁免救回）-> 强制置0
+        elif excluded and gain_score > 0:
+            conflicts.append(item_name)
+            gain_score = 0.0
+
+        total_gain += gain_score
+        total_full += full_score
+
+    return total_gain, total_full, conflicts, item_count, rescued
+
+
+def _parse_objective_full_score(comparison_result, fallback=0.0):
+    """解析"客观分总满分"数值，兼容算式写法，且对文中多处"总满分"取最大值。
+
+    模型输出有两类坑：
+    1. 写成"客观分总满分：3 + 4 + 15 = 22分"，旧正则只捕获第一个操作数(3)，
+       导致总满分被严重低估、丢分被抹平而误判推荐；
+    2. 同一份结果里"客观分总满分"出现多次（先写一个错值，后又更正），
+       此前只取第一处会拿到错值。
+
+    因此这里遍历所有"客观分总满分"出现处，每处按 "=N分" > 算式求和 > 第一个数字
+    的优先级取值，最后返回所有取值中的最大者（满分是上界，取大更安全）。
+    全部失败时返回 fallback（逐条累加满分）。
+    """
+    vals = []
+    for m_line in re.finditer(r'客观分总满分[：: ]*([^\n]*)', comparison_result):
+        line = m_line.group(1)
+        # 优先取 "= N分" 的最终结果（N 可能被 ** 包裹）
+        m_eq = re.search(r'=\s*\**\s*([0-9]+\.?[0-9]*)\s*\**\s*分?', line)
+        if m_eq:
+            try:
+                vals.append(float(m_eq.group(1)))
+                continue
+            except ValueError:
+                pass
+        # 没有等号时，若是"a + b + c"形式则对加数求和
+        addends = re.findall(r'([0-9]+\.?[0-9]*)\s*(?=\+)|(?<=\+)\s*([0-9]+\.?[0-9]*)', line)
+        if '+' in line and addends:
+            try:
+                flat = [float(a or b) for a, b in addends]
+                if flat:
+                    vals.append(sum(flat))
+                    continue
+            except ValueError:
+                pass
+        # 退回：取该行第一个数字
+        nums = re.findall(r'([0-9]+\.?[0-9]*)', line)
+        if nums:
+            try:
+                vals.append(float(nums[0]))
+            except ValueError:
+                pass
+    return max(vals) if vals else fallback
+
+
 class AIService(ABC):
     @abstractmethod
     def initialize(self, config):
@@ -74,7 +240,8 @@ class OpenAIService(AIService):
         self.extract_chain = None
         self.compare_chain = None
         self.service_check_chain = None
-        
+        self.bid_security_chain = None
+
     def initialize(self, config):
         if ChatOpenAI is None:
             log.warning("OpenAI依赖未安装")
@@ -101,7 +268,8 @@ class OpenAIService(AIService):
             self.extract_parser = StrOutputParser()
             self.compare_parser = StrOutputParser()
             self.service_check_parser = JsonOutputParser()
-            
+            self.bid_security_parser = JsonOutputParser()
+
             return True
         except Exception as e:
             log.error(f"OpenAI服务初始化失败: {str(e)}")
@@ -134,7 +302,8 @@ class DashScopeService(AIService):
         self.extract_chain = None
         self.compare_chain = None
         self.service_check_chain = None
-        
+        self.bid_security_chain = None
+
     def initialize(self, config):
         if ChatOpenAI is None:
             log.warning("ChatOpenAI依赖未安装")
@@ -167,7 +336,8 @@ class DashScopeService(AIService):
             self.extract_parser = StrOutputParser()
             self.compare_parser = StrOutputParser()
             self.service_check_parser = JsonOutputParser()
-            
+            self.bid_security_parser = JsonOutputParser()
+
             return True
         except Exception as e:
             log.error(f"DashScope服务初始化失败: {str(e)}")
@@ -200,7 +370,8 @@ class QianfanService(AIService):
         self.extract_chain = None
         self.compare_chain = None
         self.service_check_chain = None
-        
+        self.bid_security_chain = None
+
     def initialize(self, config):
         if QianfanChatEndpoint is None:
             log.warning("通义千问依赖未安装")
@@ -228,7 +399,8 @@ class QianfanService(AIService):
             self.extract_parser = StrOutputParser()
             self.compare_parser = StrOutputParser()
             self.service_check_parser = JsonOutputParser()
-            
+            self.bid_security_parser = JsonOutputParser()
+
             return True
         except Exception as e:
             log.error(f"通义千问服务初始化失败: {str(e)}")
@@ -464,7 +636,20 @@ class AIAnalyzer:
         else:
             self.current_service.service_check_chain = None
             log.warning("服务类判断提示词模板未配置或不存在，将跳过服务类判断")
-        
+
+        # 加载投标保证金语义判断链（如果配置了）
+        bid_security_prompt_path = AI_CONFIG.get("bid_security_prompt_path")
+        if bid_security_prompt_path and os.path.exists(bid_security_prompt_path):
+            bid_security_template = load_prompt_template(bid_security_prompt_path)
+            bid_security_prompt = PromptTemplate(
+                input_variables=["content"],
+                template=bid_security_template + "\n\n请严格按照上述格式输出结果，不要添加任何额外内容。"
+            )
+            self.current_service.bid_security_chain = bid_security_prompt | self.current_service.llm | self.current_service.bid_security_parser
+        else:
+            self.current_service.bid_security_chain = None
+            log.warning("投标保证金判断提示词模板未配置或不存在，将回退到关键词过滤")
+
         log.info("AI处理链构建完成")
     
     def _switch_service(self):
@@ -683,7 +868,86 @@ class AIAnalyzer:
             log.error(f"服务类判断失败：{str(e)}")
             # 判断失败时默认返回False（非服务类），避免误删项目
             return False, f"判断异常：{str(e)[:100]}"
-    
+
+    def check_bid_security_ai(self, evaluation_content, project_name=None):
+        """用AI语义理解判断项目是否【要求投标保证金】。
+
+        相比关键词匹配，可正确识别"不需要/免收/不要求投标保证金"等否定表述，
+        并区分投标保证金与履约保证金、质量保证金/质保金（后者不拦截）。
+
+        Returns:
+            tuple: (need: bool, reason: str)。need=True 表示需要投标保证金。
+            判断失败或功能不可用时返回 (False, 原因)，避免误杀项目。
+        """
+        try:
+            from config import AI_CONFIG
+            if not AI_CONFIG.get("bid_security_check", {}).get("enable", False):
+                return False, "投标保证金语义判断功能已禁用"
+
+            if not hasattr(self, 'current_service') or not self.current_service or \
+               not hasattr(self.current_service, 'bid_security_chain') or self.current_service.bid_security_chain is None:
+                return False, "投标保证金语义判断链未初始化"
+
+            log.info("开始AI语义判断项目是否要求投标保证金")
+
+            if hasattr(self, 'rate_limiter') and self.rate_limiter:
+                self.rate_limiter.wait_for_rate_limit()
+
+            text = (project_name or "") + "\n" + (evaluation_content or "")
+            # 投标保证金相关表述通常在文件前部，取前6000字符足够判断
+            content = text[:6000] if len(text) > 6000 else text
+
+            max_retries = 3
+            retry_count = 0
+            result = None
+            while retry_count < max_retries:
+                try:
+                    result = self.current_service.bid_security_chain.invoke({"content": content})
+                    break
+                except Exception as invoke_error:
+                    retry_count += 1
+                    error_msg = str(invoke_error)
+                    is_retryable = any(k in error_msg.lower() for k in [
+                        'timeout', 'timed out', 'connection', 'network', '503', '429'
+                    ])
+                    if retry_count < max_retries and is_retryable:
+                        wait_time = retry_count * 2
+                        log.warning(f"投标保证金判断请求失败（可重试），{wait_time}秒后重试（{retry_count}/{max_retries}）：{error_msg[:100]}")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        log.error(f"投标保证金判断失败（{retry_count}/{max_retries}）：{error_msg}")
+                        return False, f"判断失败：{error_msg[:100]}"
+
+            if not result:
+                log.warning("投标保证金判断结果为空，默认放行（不拦截）")
+                return False, "判断结果为空"
+
+            if isinstance(result, dict):
+                need = result.get("need", False)
+                reason = result.get("reason", "未提供理由")
+            elif isinstance(result, str):
+                try:
+                    result_dict = json.loads(result)
+                    need = result_dict.get("need", False)
+                    reason = result_dict.get("reason", "未提供理由")
+                except json.JSONDecodeError:
+                    # 兜底：字符串里明确出现 true/需要 才算需要，避免误判
+                    low = result.lower()
+                    need = ('"need": true' in low) or ('need=true' in low)
+                    reason = result if len(result) < 200 else result[:200]
+            else:
+                log.warning(f"投标保证金判断结果格式异常：{type(result)}，默认放行")
+                return False, "判断结果格式异常"
+
+            log.info(f"投标保证金语义判断完成：need={need}，理由：{reason}")
+            return bool(need), str(reason)
+
+        except Exception as e:
+            log.error(f"投标保证金语义判断异常：{str(e)}")
+            # 判断异常时默认放行（不拦截），避免误杀
+            return False, f"判断异常：{str(e)[:100]}"
+
     def extract_requirements(self, content):
         """提取项目资质要求（转发到当前服务）
         
@@ -869,39 +1133,59 @@ class AIAnalyzer:
             # 应用失分阈值调整，确保AI判断为最终判断
             from config import OBJECTIVE_SCORE_CONFIG
             if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
-                # 优先从“客观分总满分 / 客观分可得分”中计算丢分；找不到时再尝试正则匹配“丢分/失分”
-                loss_score = 0.0
                 import re
 
-                # 1. 通过总分和得分计算丢分
-                total_match = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', comparison_result)
-                gain_match = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', comparison_result)
-                if total_match and gain_match:
+                # 加载公司A类库真实持有的证书名（用于"真实持证豁免"后校验，防批量误杀）
+                held_cert_names = []
+                try:
+                    _db = next(get_db())
                     try:
-                        total_score = float(total_match.group(1))
-                        gain_score = float(gain_match.group(1))
-                        loss_score = max(total_score - gain_score, 0.0)
-                    except ValueError:
-                        loss_score = 0.0
+                        held_cert_names = [c.certificate_name for c in get_class_a_certificates(_db)]
+                    finally:
+                        _db.close()
+                except Exception as _e:
+                    log.warning(f"加载A类证书库用于后校验失败（跳过豁免）：{_e}")
 
-                # 2. 如果上面未算出丢分，再尝试匹配“丢分/失分 X 分”模式
-                if loss_score == 0.0:
-                    loss_match = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', comparison_result)
-                    if loss_match:
-                        try:
-                            loss_score = float(loss_match.group(1))
-                        except ValueError:
-                            loss_score = 0.0
+                # 【后校验】逐条累加得分（已排除价格类条目） + 真实持证豁免救回 + 修正矛盾条目
+                pc_gain, pc_full, conflicts, item_count, rescued = _postcheck_objective_score(
+                    comparison_result, held_cert_names
+                )
+                if rescued:
+                    log.info(f"真实持证豁免：救回{len(rescued)}个被误触发排除规则的体系认证条目：{rescued}")
+                if conflicts:
+                    log.warning(f"检测到{len(conflicts)}个矛盾条目（触发排除规则却判满足），已强制置0：{conflicts}")
+
+                # 客观分总满分：优先取模型汇总行，兼容"总满分：3 + 4 + 5 = 12分"这类算式
+                # （旧正则只捕获第一个操作数，会把总满分严重低估，导致丢分被抹平误判推荐）
+                total_score = _parse_objective_full_score(comparison_result, fallback=pc_full)
+
+                # 客观分可得分：以逐条累加值为权威，不信任模型自己写的汇总数字
+                gain_score = pc_gain
+                loss_score = max(total_score - gain_score, 0.0)
 
                 threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                if loss_score <= threshold:
+                conflict_note = ""
+                if rescued:
+                    conflict_note += f"\n- 真实持证豁免（公司A类库真实持有对应体系认证，cnca可查，救回为满足）：{('、'.join(rescued))}"
+                if conflicts:
+                    conflict_note += f"\n- 已修正矛盾条目（触发排除规则却判满足，强制置0）：{('、'.join(conflicts))}"
+                if item_count == 0:
+                    # 未提取到任何客观分评分项（多为非招标正文/附件），不能因“丢分0≤阈值”误判推荐
+                    final_decision = "未判定"
+                    comparison_result += f"\n\n【AI最终判断说明】\n- 未提取到任何客观分评分项，无法进行客观分判定\n- 最终判断：未判定（建议人工复核，可能非招标正文）"
+                elif total_score <= 0:
+                    # 有客观分条目却拿不到总满分（模型漏写汇总行），此时丢分恒为0会误判推荐，
+                    # 故标记为未判定交人工，避免假阳性
+                    final_decision = "未判定"
+                    comparison_result += f"\n\n【AI最终判断说明】\n- 客观分可得分（逐条累加校验）：{gain_score}分\n- 无法确定客观分总满分（模型未给出有效汇总），无法计算丢分\n- 最终判断：未判定（建议人工复核）"
+                elif loss_score <= threshold:
                     # 丢分≤阈值，改为"推荐参与"
                     final_decision = "推荐参与"
-                    comparison_result += f"\n\n【AI最终判断说明】\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 最终判断：推荐参与"
+                    comparison_result += f"\n\n【AI最终判断说明】\n- 客观分可得分（逐条累加校验）：{gain_score}分\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 最终判断：推荐参与{conflict_note}"
                 else:
                     # 丢分>阈值，改为"不推荐参与"
                     final_decision = "不推荐参与"
-                    comparison_result += f"\n\n【AI最终判断说明】\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 最终判断：不推荐参与"
+                    comparison_result += f"\n\n【AI最终判断说明】\n- 客观分可得分（逐条累加校验）：{gain_score}分\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 最终判断：不推荐参与{conflict_note}"
             
             log.info(f"AI最终判断：{final_decision}")
             return comparison_result, final_decision
@@ -926,7 +1210,31 @@ class AIAnalyzer:
             if project.status in [ProjectStatus.ANALYZED, ProjectStatus.MATCHED]:
                 log.info(f"项目已分析或已匹配，跳过分析 (tender_id: {tender_id}, status: {project.status})")
                 return project
-            
+
+            # 前置过滤：非招标文件 → 不调AI（确定性过滤，省token）
+            try:
+                from utils.pre_filter import check_non_tender, check_bid_security
+                _nt_hit, _nt_reason = check_non_tender(project.project_name, project.file_path)
+                if _nt_hit:
+                    log.info(f"⏭️ 项目 {tender_id} {_nt_reason}，跳过AI分析并排除")
+                    update_project(db, tender_id, {"status": ProjectStatus.EXCLUDED, "error_msg": _nt_reason})
+                    return project
+                _content = getattr(project, "evaluation_content", None) or project.content
+                # 投标保证金：优先AI语义判断（正确区分"不需要投标保证金"及履约/质量保证金）；
+                # 未启用或不可用时回退关键词过滤
+                if AI_CONFIG.get("bid_security_check", {}).get("enable", False):
+                    _bs_hit, _bs_reason = self.check_bid_security_ai(_content, project.project_name)
+                else:
+                    _bs_hit, _bs_reason = check_bid_security(_content, project.project_name)
+                if _bs_hit:
+                    log.info(f"⏭️ 项目 {tender_id} {_bs_reason}，中断分析并设为不推荐")
+                    update_project(db, tender_id, {
+                        "status": ProjectStatus.EXCLUDED, "final_decision": "不推荐", "error_msg": f"需要投标保证金：{_bs_reason}",
+                    })
+                    return project
+            except Exception as _e:
+                log.warning(f"前置过滤调用失败，跳过该过滤继续分析：{_e}")
+
             # 提取项目资质要求
             log.info(f"正在提取项目资质要求 (tender_id: {tender_id})")
             extracted = self.extract_project_requirements(project.content, tender_id)

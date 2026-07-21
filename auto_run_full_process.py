@@ -179,7 +179,44 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                                 continue
                             
                             logger.info(f"开始分析项目：{project.project_name}（ID：{project.id}）")
-                            
+
+                            # 前置过滤A：非招标文件（中标结果/更正/图纸/工程量清单等）→ 跳过AI分析，直接排除
+                            try:
+                                from utils.pre_filter import check_non_tender, check_bid_security
+                                _nt_hit, _nt_reason = check_non_tender(project.project_name, project.file_path)
+                            except Exception as _e:
+                                logger.warning(f"前置过滤(非招标)调用失败，跳过该过滤：{_e}")
+                                _nt_hit, _nt_reason = False, ""
+                            if _nt_hit:
+                                logger.info(f"⏭️ 项目 {project.id} {_nt_reason}，跳过AI分析并排除")
+                                update_project(db, project.id, {
+                                    "status": ProjectStatus.EXCLUDED,
+                                    "error_msg": _nt_reason,
+                                })
+                                db.commit()
+                                continue
+
+                            # 前置过滤B：投标保证金 → 优先AI语义判断（正确识别"不需要投标保证金"及
+                            # 履约/质量保证金），未启用或不可用时回退关键词过滤；需要投标保证金则设为不推荐
+                            try:
+                                from config import AI_CONFIG as _AI_CFG
+                                if _AI_CFG.get("bid_security_check", {}).get("enable", False):
+                                    _bs_hit, _bs_reason = analyzer.check_bid_security_ai(project.evaluation_content, project.project_name)
+                                else:
+                                    _bs_hit, _bs_reason = check_bid_security(project.evaluation_content, project.project_name)
+                            except Exception as _e:
+                                logger.warning(f"前置过滤(投标保证金)调用失败，跳过该过滤：{_e}")
+                                _bs_hit, _bs_reason = False, ""
+                            if _bs_hit:
+                                logger.info(f"⏭️ 项目 {project.id} 需要投标保证金（{_bs_reason}），中断分析并设为不推荐")
+                                update_project(db, project.id, {
+                                    "status": ProjectStatus.EXCLUDED,
+                                    "final_decision": "不推荐",
+                                    "error_msg": f"需要投标保证金：{_bs_reason}",
+                                })
+                                db.commit()
+                                continue
+
                             # 0. 先判断是否是服务类项目
                             is_service, reason = analyzer.is_service_project(project.evaluation_content)
                             

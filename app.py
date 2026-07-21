@@ -247,7 +247,7 @@ st.set_page_config(
 try:
     import config
     from config import COMPANY_QUALIFICATIONS, TEST_CONFIG, SPIDER_CONFIG, BASE_DIR, FILES_DIR, REPORT_DIR, \
-        STORAGE_CONFIG, LOG_DIR, OBJECTIVE_SCORE_CONFIG
+        STORAGE_CONFIG, LOG_DIR, OBJECTIVE_SCORE_CONFIG, AI_CONFIG
     from parser.file_parser import FileParser
     from ai.qualification_analyzer import AIAnalyzer
     from report.report_generator import ReportGenerator
@@ -3533,6 +3533,28 @@ def _start_background_task(task_type, **kwargs):
                                     if project.evaluation_content:
                                         log.info(f"开始分析项目 {project.id}：{project.project_name[:50]}")
 
+                                        # 前置过滤：非招标文件/需要保证金 → 不调AI（确定性过滤，省token）
+                                        try:
+                                            from utils.pre_filter import check_non_tender, check_bid_security
+                                            _nt_hit, _nt_reason = check_non_tender(project.project_name, project.file_path)
+                                            _bs_hit, _bs_reason = check_bid_security(project.evaluation_content, project.project_name)
+                                        except Exception as _e:
+                                            log.warning(f"前置过滤调用失败，跳过该过滤：{_e}")
+                                            _nt_hit = _bs_hit = False
+                                            _nt_reason = _bs_reason = ""
+                                        if _nt_hit:
+                                            log.info(f"⏭️ 项目 {project.id} {_nt_reason}，跳过AI分析并排除")
+                                            update_project(db, project.id, {"status": ProjectStatus.EXCLUDED, "error_msg": _nt_reason})
+                                            db.commit()
+                                            processed_count += 1
+                                            continue
+                                        if _bs_hit:
+                                            log.info(f"⏭️ 项目 {project.id} {_bs_reason}，中断分析并设为不推荐")
+                                            update_project(db, project.id, {"status": ProjectStatus.EXCLUDED, "final_decision": "不推荐", "error_msg": _bs_reason})
+                                            db.commit()
+                                            processed_count += 1
+                                            continue
+
                                         # 0. 先判断是否是服务类项目
                                         is_service, reason = analyzer.is_service_project(project.evaluation_content)
 
@@ -3726,6 +3748,23 @@ def _render_excluded_projects_block(projects, key_suffix="all"):
         "随后在上方选择「AI资质分析」并执行。"
         "若项目仍被自动判为服务类，请在配置中调整服务类排除策略。"
     )
+
+    # 全选/取消全选：通过重建默认勾选值 + 重挂载编辑器（清除其 session 状态）来生效
+    editor_key = f"process_execution_excluded_data_editor_{ks}"
+    check_default_key = f"_excluded_check_default_{ks}"
+    sa_col1, sa_col2, sa_col3 = st.columns([1, 1, 4])
+    with sa_col1:
+        if st.button("☑️ 全选", key=f"excluded_select_all_{ks}"):
+            st.session_state[check_default_key] = True
+            st.session_state.pop(editor_key, None)
+            st.rerun()
+    with sa_col2:
+        if st.button("◻️ 取消全选", key=f"excluded_clear_all_{ks}"):
+            st.session_state[check_default_key] = False
+            st.session_state.pop(editor_key, None)
+            st.rerun()
+    check_default = bool(st.session_state.get(check_default_key, False))
+
     rows = []
     for p in projects:
         p_date = p.create_time or p.publish_time
@@ -3734,7 +3773,7 @@ def _render_excluded_projects_block(projects, key_suffix="all"):
         rev = getattr(p, "review_reason", None) or ""
         name = p.project_name or ""
         rows.append({
-            "勾选": False,
+            "勾选": check_default,
             "ID": int(p.id),
             "项目名称": (name[:100] + "…") if len(name) > 100 else name,
             "来源": p.site_name or "-",
@@ -3762,7 +3801,7 @@ def _render_excluded_projects_block(projects, key_suffix="all"):
         hide_index=True,
         use_container_width=True,
         num_rows="fixed",
-        key=f"process_execution_excluded_data_editor_{ks}",
+        key=editor_key,
     )
 
     btn_col1, btn_col2 = st.columns([1, 4])
@@ -4363,7 +4402,8 @@ def render_process_execution():
     if selected_process in ["全流程", "标书爬虫"]:
         # 平台选择
         available_platforms = get_available_platforms()
-        platform_options = ["全部"] + list(available_platforms.values())
+        # “全部”=所有平台；“全部国企采购平台”=除政采云(zhejiang)外的所有平台
+        platform_options = ["全部", "全部国企采购平台"] + list(available_platforms.values())
         selected_platform_name = st.selectbox(
             "选择爬取平台",
             options=platform_options,
@@ -4371,14 +4411,20 @@ def render_process_execution():
             key="selected_platform_name"
         )
 
-        # 将平台名称转换为平台代码
-        selected_platform_code = None
-        if selected_platform_name != "全部":
+        # 将平台选择转换为平台代码 / 平台列表
+        selected_platform_code = None          # 单一平台代码
+        enabled_platforms = None               # 平台列表（None=全部）
+        if selected_platform_name == "全部":
+            enabled_platforms = None
+        elif selected_platform_name == "全部国企采购平台":
+            enabled_platforms = [code for code in available_platforms if code != "zhejiang"]
+        else:
             selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
+            enabled_platforms = [selected_platform_code] if selected_platform_code else None
 
         col1, col2 = st.columns(2)
         with col1:
-            crawl_quantity = st.number_input("爬取数量", min_value=1, max_value=200,
+            crawl_quantity = st.number_input("爬取数量", min_value=1, max_value=800,
                                              value=st.session_state.get("crawl_quantity", SPIDER_CONFIG["daily_limit"]),
                                              step=1)
             st.session_state["crawl_quantity"] = crawl_quantity
@@ -4400,7 +4446,6 @@ def render_process_execution():
 
         try:
             if selected_process == "全流程":
-                enabled_platforms = [selected_platform_code] if selected_platform_code else None
                 _start_background_task("全流程", daily_limit=crawl_quantity, days_before=crawl_days_before,
                                        enabled_platforms=enabled_platforms)
                 st.success("✅ 全流程已启动，正在后台执行中...")
@@ -4411,7 +4456,9 @@ def render_process_execution():
                     return
                 st.session_state['spider_running'] = False
                 st.session_state['spider_paused'] = False
-                st.session_state['selected_platform_code'] = selected_platform_code  # 保存平台选择
+                # 保存平台选择：单一平台或平台列表
+                st.session_state['selected_platform_code'] = selected_platform_code
+                st.session_state['selected_enabled_platforms'] = enabled_platforms
                 run_spider_with_progress()
             elif selected_process == "文件解析":
                 _start_background_task("文件解析")
@@ -4501,6 +4548,7 @@ def run_spider_with_progress():
         spider_total = st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])
         days_before = st.session_state.get("crawl_days_before", 7)  # 默认7天
         selected_platform_code = st.session_state.get('selected_platform_code', None)
+        selected_enabled_platforms = st.session_state.get('selected_enabled_platforms', None)
 
         from spider import SpiderManager
 
@@ -4520,11 +4568,14 @@ def run_spider_with_progress():
                 )
                 projects = spider.run()
             else:
-                # “全部”：运行所有已注册平台（此前只跑了政采云，导致其他平台数据缺失）
-                safe_streamlit_update(status_text.info, "📥 开始爬取全部平台...")
+                # None=全部平台；列表=指定子集（如“全部国企采购平台”=除政采云外的所有平台）
+                if selected_enabled_platforms:
+                    safe_streamlit_update(status_text.info, "📥 开始爬取全部国企采购平台...")
+                else:
+                    safe_streamlit_update(status_text.info, "📥 开始爬取全部平台...")
                 projects = SpiderManager.run_all_spiders(
                     days_before=days_before,
-                    enabled_platforms=None,
+                    enabled_platforms=selected_enabled_platforms,
                     total_limit=spider_total,
                 )
             total_count = len(projects)
