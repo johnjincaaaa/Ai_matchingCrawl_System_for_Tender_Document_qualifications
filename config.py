@@ -215,6 +215,11 @@ AI_CONFIG = {
         "burst_allowance": 5,  # 突发请求允许数量（用于处理积压）
     },
 
+    # AI分析并发配置（分析阶段为I/O密集型，等待DashScope返回，用多线程并发提速）
+    "analysis_concurrency": {
+        "max_workers": 4,  # 并发线程数（默认4，服务器资源紧张时勿调太高；API配额RPM/TPM很宽松，瓶颈在本机与SQLite单写）
+    },
+
     # 规则匹配配置
     "rule_matching": {
         "use_semantic_match": True,  # 是否启用语义匹配（True：使用语义匹配，False：使用关键词匹配）

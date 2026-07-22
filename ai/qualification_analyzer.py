@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from config import AI_CONFIG, COMPANY_QUALIFICATIONS
 from utils.log import log
 import time
+import threading
 from datetime import datetime, timedelta
 from collections import deque
 from utils.db import get_db, TenderProject, ProjectStatus, update_project, get_company_qualifications, get_class_a_certificates, get_class_b_rules
@@ -50,6 +51,21 @@ _SCOPE_RESTRICTION_RE = re.compile(
     r'认证范围|范围包含|范围涵盖|范围需|范围须|范围应|范围含|覆盖.{0,8}(服务|业务|领域|生产|销售|制造)'
 )
 
+# 公司【没有】的证书信号：要求段命中任一即说明该条目要的不是（或不只是）通用体系认证，
+# 不适用真实持证豁免。涵盖：具体产品/能效认证、其他体系、个人资质、业绩、检测报告等。
+_NON_HELD_CERT_RE = re.compile(
+    r'节能产品|环境标志产品|环保产品|绿色产品|能效|3c|ccc|强制性认证|'
+    r'食品安全管理体系|haccp|知识产权管理体系|能源管理体系|保密|隐私信息|业务连续性|'
+    r'售后服务认证|服务认证|碳中和|软件著作权|软件产品|检测报告|型式检验|'
+    r'职称|建造师|工程师|执业资格|注册.{0,4}师|社保|业绩|中标|合同复印件|行政许可|经营许可'
+)
+
+# 抽取"项目要求分析"段（要求到底是什么），避免被"匹配过程分析"里 AI 顺带提及的
+# 通用体系认证名（如"公司有ISO14001但不能替代环境标志产品认证"）误导。
+_REQUIRE_SECTION_RE = re.compile(
+    r'项目要求(?:分析)?[：:].*?(?=\n\s*2[．.、]|匹配过程分析|$)', re.S
+)
+
 
 def _held_system_cert_keys(held_cert_names):
     """把公司A类库证书名列表归一为体系标识集合（quality/environment/...）。"""
@@ -65,29 +81,45 @@ def _block_requires_only_held_certs(block, held_keys):
     """判断某客观分条目块是否属于"真实持证豁免"情形。
 
     返回 True 的条件（全部满足）：
-    1. 条目要求的是通用管理体系认证（块中命中至少一个体系别名）；
-    2. 块中命中的体系认证，全部落在公司真实持有的 held_keys 内（不含公司没有的证书，
-       如食品安全/HACCP/知识产权体系或具体产品认证）——避免"混合捆绑"里公司缺证的子项被误救；
-    3. 未出现专业范围硬限定（认证范围须覆盖IDC/无线电/垃圾清运/软件开发等）。
+    1. 条目【要求段】要求的是通用管理体系认证（要求段命中至少一个体系别名）；
+       —— 只看"项目要求分析"段，不扫整块，避免被"匹配过程分析"里 AI 顺带提到的
+          体系认证名（如"公司有ISO14001但不能替代环境标志产品认证"）误判；
+    2. 要求段未出现公司没有的证书信号（节能/环境标志产品、能效、食品安全体系、
+       个人职称、业绩、检测报告等）——避免把"产品认证/混合缺证"误救；
+    3. 要求段命中的体系认证，全部落在公司真实持有的 held_keys 内；
+    4. 未出现专业范围硬限定（认证范围须覆盖IDC/无线电/垃圾清运/软件开发等）。
 
     命中即视为：该条目所需证书公司真实持有、cnca 核验可通过，应判满足。
     """
-    low = block.lower()
-    # 块中出现了哪些体系认证
+    # 只在"项目要求分析"段内判断；抽取失败则退回用整块（保守：后续 _NON_HELD 会再拦一道）
+    m_req = _REQUIRE_SECTION_RE.search(block)
+    scope_text = m_req.group(0) if m_req else block
+    low = scope_text.lower()
+
+    # 要求段出现公司没有的证书信号 -> 不是纯体系认证要求，不救回
+    if _NON_HELD_CERT_RE.search(low):
+        return False
+
+    # 要求段存在专业范围硬限定 -> 不确定覆盖，不自动救回
+    if _SCOPE_RESTRICTION_RE.search(scope_text):
+        return False
+
+    # 要求段出现了哪些体系认证（具体别名）
     mentioned = set()
     for key, aliases in _SYSTEM_CERT_ALIASES.items():
         if any(a in low for a in aliases):
             mentioned.add(key)
-    if not mentioned:
-        return False  # 不是体系认证类条目，不适用本豁免
-    # 出现了公司没有的体系认证信号（如食品安全体系/HACCP/知识产权管理体系）-> 属混合缺证，不整体救回
-    if re.search(r'食品安全管理体系|haccp|知识产权管理体系|能源管理体系|保密|隐私信息|业务连续性', low):
-        return False
-    # 存在专业范围硬限定 -> 不确定覆盖，不自动救回
-    if _SCOPE_RESTRICTION_RE.search(block):
-        return False
-    # 块中提到的体系认证必须全部是公司真实持有的
-    return mentioned.issubset(held_keys)
+    if mentioned:
+        # 命中具体体系别名：要求的体系认证必须全部是公司真实持有的
+        return mentioned.issubset(held_keys)
+
+    # 要求段未写具体证书名，但出现"X类/多类(管理)体系认证"这类泛指表述
+    # （且上方已确认无 NON_HELD 信号）-> 视为纯通用体系认证要求，公司5张体系证书可覆盖，救回
+    if re.search(r'(体系认证|管理体系)', low) and \
+       re.search(r'[一二三四五六两多几]\s*类|[一二三四五六两多几]\s*个|每提供|每类|多类|各类', low):
+        return True
+
+    return False  # 要求段不是体系认证类条目，不适用本豁免
 
 
 def _postcheck_objective_score(comparison_result, held_cert_names=None):
@@ -457,44 +489,59 @@ def load_prompt_template(file_path):
 
 # 请求频率限制器
 class RateLimiter:
-    """请求频率限制器，防止API调用过于频繁"""
+    """请求频率限制器，防止API调用过于频繁。
+
+    线程安全：多线程并发分析时会被多个worker同时调用，计数/更新需在锁内保证原子，
+    否则多个线程可能同时通过检查、突破每小时上限。sleep 放在锁外，避免并发线程串行排队。
+    """
     def __init__(self, max_requests_per_hour=40, min_interval_seconds=90, burst_allowance=5):
         self.max_requests_per_hour = max_requests_per_hour
         self.min_interval_seconds = min_interval_seconds
         self.burst_allowance = burst_allowance
-        
+
         # 记录请求时间的队列，用于计算每小时请求数
         self.request_times = deque()
-        
+
         # 最后一次请求时间，用于计算请求间隔
         self.last_request_time = 0
-    
+
+        # 保护 request_times / last_request_time 的并发访问
+        self._lock = threading.Lock()
+
     def wait_for_rate_limit(self):
-        """等待直到可以发送请求"""
-        current_time = time.time()
-        
-        # 移除一小时前的请求记录
-        while self.request_times and current_time - self.request_times[0] > 3600:
-            self.request_times.popleft()
-        
-        # 检查每小时请求数是否超过限制
-        if len(self.request_times) >= self.max_requests_per_hour:
-            # 计算需要等待的时间
-            wait_time = 3600 - (current_time - self.request_times[0])
-            log.info(f"请求频率限制：每小时请求数已达上限({self.max_requests_per_hour})，需要等待 {wait_time:.1f} 秒")
+        """等待直到可以发送请求（线程安全）。"""
+        # 循环直到本线程拿到一个合法的发送额度：每次在锁内判断需要等待多久，
+        # 到锁外 sleep，再回到锁内复核，避免 sleep 期间其他线程改变状态导致超限。
+        while True:
+            with self._lock:
+                current_time = time.time()
+
+                # 移除一小时前的请求记录
+                while self.request_times and current_time - self.request_times[0] > 3600:
+                    self.request_times.popleft()
+
+                wait_time = 0.0
+                # 检查每小时请求数是否超过限制
+                if len(self.request_times) >= self.max_requests_per_hour:
+                    wait_time = max(wait_time, 3600 - (current_time - self.request_times[0]))
+                    log.info(f"请求频率限制：每小时请求数已达上限({self.max_requests_per_hour})，需要等待 {wait_time:.1f} 秒")
+
+                # 检查请求间隔是否满足最小间隔
+                if current_time - self.last_request_time < self.min_interval_seconds:
+                    interval_wait = self.min_interval_seconds - (current_time - self.last_request_time)
+                    if interval_wait > wait_time:
+                        wait_time = interval_wait
+                        log.info(f"请求频率限制：请求间隔过小，需要等待 {wait_time:.1f} 秒")
+
+                if wait_time <= 0:
+                    # 额度可用：登记本次请求时间后返回
+                    now = time.time()
+                    self.request_times.append(now)
+                    self.last_request_time = now
+                    return
+
+            # 锁外等待，让出机会给其他线程；醒来后回到循环顶部复核
             time.sleep(wait_time)
-            # 等待后清空请求记录
-            self.request_times.clear()
-        
-        # 检查请求间隔是否满足最小间隔
-        if current_time - self.last_request_time < self.min_interval_seconds:
-            wait_time = self.min_interval_seconds - (current_time - self.last_request_time)
-            log.info(f"请求频率限制：请求间隔过小，需要等待 {wait_time:.1f} 秒")
-            time.sleep(wait_time)
-        
-        # 更新请求记录
-        self.request_times.append(time.time())
-        self.last_request_time = time.time()
 
 # AI分析器类
 class AIAnalyzer:

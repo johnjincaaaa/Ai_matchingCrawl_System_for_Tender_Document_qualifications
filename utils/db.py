@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime, Enum, extract
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, DateTime, Enum, extract, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -19,13 +19,31 @@ else:
 if DB_CONFIG["db_type"] == "sqlite":
     # SQLite连接池优化：增加池大小，启用连接检查
     engine = create_engine(
-        DB_URL, 
+        DB_URL,
         echo=False,
         pool_size=5,  # 连接池大小
         max_overflow=10,  # 最大溢出连接数
         pool_pre_ping=True,  # 连接前检查连接是否有效
-        connect_args={"check_same_thread": False}  # SQLite允许多线程
+        connect_args={
+            "check_same_thread": False,  # SQLite允许多线程
+            "timeout": 30,  # 拿写锁时最多等待30秒（DBAPI层），配合下方busy_timeout
+        }
     )
+
+    # 多线程并发写SQLite时，同一时刻仅允许一个写事务。默认拿不到锁会立即抛
+    # "database is locked"。这里在每个连接建立时设置PRAGMA：
+    # - busy_timeout：拿不到锁时忙等待而非立即失败（并发分析必需）
+    # - WAL 模式：读写不互斥，显著提升读写并发
+    # - synchronous=NORMAL：WAL下兼顾安全与性能
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, _connection_record):
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=30000")  # 30秒，单位毫秒
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 else:
     # PostgreSQL连接池配置
     engine = create_engine(

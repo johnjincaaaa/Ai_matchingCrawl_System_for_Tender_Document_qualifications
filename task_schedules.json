@@ -1,0 +1,13 @@
+[
+  {
+    "task_id": "task_20260715_164155",
+    "task_name": "TenderSystem_AutoRun_task_20260715_164155",
+    "schedule_time": "00:15",
+    "daily_limit": 300,
+    "days_before": 1,
+    "enabled": true,
+    "enabled_platforms": null,
+    "created_at": "2026-07-15 16:41:59",
+    "wrapper_cmd": "E:\\标书ai匹配系统ByJohnjincaaa\\a\\tasks\\run_task_20260715_164155.cmd"
+  }
+]

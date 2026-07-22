@@ -475,52 +475,7 @@ def process_session_state_actions():
 
                         # 3. 应用客观分判定配置
                         from config import OBJECTIVE_SCORE_CONFIG
-                        if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
-                            # 检查是否需要根据客观分丢分阈值调整最终决策
-                            import re
-
-                            # 封装一个内部函数，统一“丢分”计算逻辑
-                            def _extract_loss_score(text: str) -> float:
-                                loss = 0.0
-                                # 1. 通过“客观分总满分 / 客观分可得分”计算
-                                total_m = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', text)
-                                gain_m = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', text)
-                                if total_m and gain_m:
-                                    try:
-                                        total_s = float(total_m.group(1))
-                                        gain_s = float(gain_m.group(1))
-                                        loss = max(total_s - gain_s, 0.0)
-                                    except ValueError:
-                                        loss = 0.0
-                                # 2. 若仍为0，再尝试匹配“丢分/失分 X 分”
-                                if loss == 0.0:
-                                    m = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', text)
-                                    if m:
-                                        try:
-                                            loss = float(m.group(1))
-                                        except ValueError:
-                                            loss = 0.0
-                                return loss
-
-                            if "客观分不满分" in final_decision:
-                                # 尝试从比对结果中提取丢分信息
-                                loss_score = _extract_loss_score(comparison_result)
-                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                if loss_score <= threshold:
-                                    # 丢分≤阈值，改为"推荐参与"
-                                    original_decision = final_decision
-                                    final_decision = "推荐参与"
-                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
-                            elif "推荐参与" in final_decision:
-                                # 检查是否需要根据丢分阈值改为"不推荐参与"
-                                loss_score = _extract_loss_score(comparison_result)
-                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                if loss_score > threshold:
-                                    # 丢分>阈值，改为"不推荐参与"
-                                    original_decision = final_decision
-                                    final_decision = "不推荐参与"
-                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
-
+                        # 最终判定与丢分阈值调整已在 compare_qualifications 内统一处理（见后校验逻辑），此处不再二次调整
                         # 4. 确保结果是中文的
                         if not ("符合" in comparison_result and (
                                 "可以参与" in comparison_result or "不可以参与" in comparison_result)):
@@ -607,49 +562,7 @@ def process_session_state_actions():
 
                     # 3. 应用客观分判定配置
                     from config import OBJECTIVE_SCORE_CONFIG
-                    if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
-                        # 检查是否需要根据客观分丢分阈值调整最终决策
-                        import re
-
-                        def _extract_loss_score(text: str) -> float:
-                            loss = 0.0
-                            total_m = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', text)
-                            gain_m = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', text)
-                            if total_m and gain_m:
-                                try:
-                                    total_s = float(total_m.group(1))
-                                    gain_s = float(gain_m.group(1))
-                                    loss = max(total_s - gain_s, 0.0)
-                                except ValueError:
-                                    loss = 0.0
-                            if loss == 0.0:
-                                m = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', text)
-                                if m:
-                                    try:
-                                        loss = float(m.group(1))
-                                    except ValueError:
-                                        loss = 0.0
-                            return loss
-
-                        if "客观分不满分" in final_decision:
-                            # 尝试从比对结果中提取丢分信息
-                            loss_score = _extract_loss_score(comparison_result)
-                            threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                            if loss_score <= threshold:
-                                # 丢分≤阈值，改为"推荐参与"
-                                original_decision = final_decision
-                                final_decision = "推荐参与"
-                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
-                        elif "推荐参与" in final_decision:
-                            # 检查是否需要根据丢分阈值改为"不推荐参与"
-                            loss_score = _extract_loss_score(comparison_result)
-                            threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                            if loss_score > threshold:
-                                # 丢分>阈值，改为"不推荐参与"
-                                original_decision = final_decision
-                                final_decision = "不推荐参与"
-                                comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
-
+                    # 最终判定与丢分阈值调整已在 compare_qualifications 内统一处理（见后校验逻辑），此处不再二次调整
                     # 4. 确保结果是中文的
                     if not ("符合" in comparison_result and (
                             "可以参与" in comparison_result or "不可以参与" in comparison_result)):
@@ -3005,38 +2918,7 @@ def run_ai_analysis_with_progress():
 
                 # 3. 应用客观分判定配置
                 from config import OBJECTIVE_SCORE_CONFIG
-                if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
-                    # 检查是否需要根据客观分丢分阈值调整最终决策
-                    if "客观分不满分" in final_decision:
-                        # 尝试从比对结果中提取丢分信息
-                        loss_score = 0.0
-                        # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
-                        import re
-                        loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                        if loss_match:
-                            loss_score = float(loss_match.group(1))
-
-                        threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                        if loss_score <= threshold:
-                            # 丢分≤阈值，改为"推荐参与"
-                            original_decision = final_decision
-                            final_decision = "推荐参与"
-                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
-                    elif "推荐参与" in final_decision:
-                        # 检查是否需要根据丢分阈值改为"不推荐参与"
-                        loss_score = 0.0
-                        import re
-                        loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                        if loss_match:
-                            loss_score = float(loss_match.group(1))
-
-                        threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                        if loss_score > threshold:
-                            # 丢分>阈值，改为"不推荐参与"
-                            original_decision = final_decision
-                            final_decision = "不推荐参与"
-                            comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
-
+                # 最终判定与丢分阈值调整已在 compare_qualifications 内统一处理（见后校验逻辑），此处不再二次调整
                 # 4. 确保结果是中文的，如果不是则格式化
                 if not ("符合" in comparison_result and (
                         "可以参与" in comparison_result or "不可以参与" in comparison_result)):
@@ -3513,190 +3395,51 @@ def _start_background_task(task_type, **kwargs):
                                 log.info("没有待分析的项目，AI资质分析任务完成")
                                 break  # 没有项目，退出循环
 
+                            # 收集待处理项目ID（不跨线程共享ORM对象/Session）
+                            project_infos = [(p.id, p.project_name) for p in projects]
                             processed_count = 0
-                            for project in projects:
-                                # 检查是否被停止
-                                if safe_get_session_state(config["stopped_key"]):
-                                    log.warning(f"AI资质分析被用户终止，已处理 {processed_count}/{len(projects)} 个项目")
-                                    break
+                            excluded_count = 0
+                            failed_count = 0
 
-                                # 检查是否被暂停
-                                while safe_get_session_state(config["paused_key"]) and not safe_get_session_state(
-                                        config["stopped_key"]):
-                                    time.sleep(1)
+                            # 并发线程数（I/O密集：等待DashScope返回，用多线程并发提速）
+                            try:
+                                _max_workers = AI_CONFIG.get("analysis_concurrency", {}).get("max_workers", 4)
+                            except Exception:
+                                _max_workers = 4
+                            _max_workers = max(1, min(int(_max_workers), len(project_infos)))
+                            log.info(f"🧵 使用 {_max_workers} 个线程并发分析 {len(project_infos)} 个项目")
 
-                                if safe_get_session_state(config["stopped_key"]):
-                                    log.warning(f"AI资质分析被用户终止，已处理 {processed_count}/{len(projects)} 个项目")
-                                    break
+                            from concurrent.futures import ThreadPoolExecutor, as_completed
+                            from ai.analysis_worker import analyze_one_project
 
-                                try:
-                                    if project.evaluation_content:
-                                        log.info(f"开始分析项目 {project.id}：{project.project_name[:50]}")
+                            with ThreadPoolExecutor(max_workers=_max_workers, thread_name_prefix="ai-analyze") as _executor:
+                                _futures = {}
+                                for _pid, _pname in project_infos:
+                                    # 提交前检查停止/暂停：停止则不再提交新任务
+                                    if safe_get_session_state(config["stopped_key"]):
+                                        log.warning(f"AI资质分析被用户终止，停止提交新任务")
+                                        break
+                                    while safe_get_session_state(config["paused_key"]) and not safe_get_session_state(config["stopped_key"]):
+                                        time.sleep(1)
+                                    if safe_get_session_state(config["stopped_key"]):
+                                        break
+                                    _futures[_executor.submit(analyze_one_project, analyzer, _pid, _pname)] = (_pid, _pname)
 
-                                        # 前置过滤：非招标文件/需要保证金 → 不调AI（确定性过滤，省token）
-                                        try:
-                                            from utils.pre_filter import check_non_tender, check_bid_security
-                                            _nt_hit, _nt_reason = check_non_tender(project.project_name, project.file_path)
-                                            _bs_hit, _bs_reason = check_bid_security(project.evaluation_content, project.project_name)
-                                        except Exception as _e:
-                                            log.warning(f"前置过滤调用失败，跳过该过滤：{_e}")
-                                            _nt_hit = _bs_hit = False
-                                            _nt_reason = _bs_reason = ""
-                                        if _nt_hit:
-                                            log.info(f"⏭️ 项目 {project.id} {_nt_reason}，跳过AI分析并排除")
-                                            update_project(db, project.id, {"status": ProjectStatus.EXCLUDED, "error_msg": _nt_reason})
-                                            db.commit()
-                                            processed_count += 1
-                                            continue
-                                        if _bs_hit:
-                                            log.info(f"⏭️ 项目 {project.id} {_bs_reason}，中断分析并设为不推荐")
-                                            update_project(db, project.id, {"status": ProjectStatus.EXCLUDED, "final_decision": "不推荐", "error_msg": _bs_reason})
-                                            db.commit()
-                                            processed_count += 1
-                                            continue
-
-                                        # 0. 先判断是否是服务类项目
-                                        is_service, reason = analyzer.is_service_project(project.evaluation_content)
-
-                                        # 检查是否是因为功能被禁用而返回False
-                                        try:
-                                            service_check_enabled = AI_CONFIG.get("service_check", {}).get(
-                                                "enable", False)
-                                        except Exception as e:
-                                            log.warning(f"访问AI_CONFIG失败，使用默认值：{str(e)}")
-                                            service_check_enabled = False  # 默认禁用服务类检查
-
-                                        if is_service and service_check_enabled:
-                                            # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
-                                            log.info(f"⚠️ 项目 {project.id} 是服务类项目，标记为已排除：{reason}")
-                                            # 更新项目状态为已排除，而不是删除，避免下次重复爬取
-                                            from utils.db import update_project, ProjectStatus
-                                            update_project(db, project.id, {
-                                                "status": ProjectStatus.EXCLUDED,
-                                                "error_msg": f"服务类项目：{reason}"
-                                            })
-                                            db.commit()
-                                            log.info(
-                                                f"✅ 服务类项目已标记为已排除：{project.project_name}（ID：{project.id}）")
-                                            continue  # 跳过后续分析
-                                        elif is_service and not service_check_enabled:
-                                            # 当服务类判断功能被禁用时，跳过判断，继续分析所有项目
-                                            log.info(f"服务类判断功能已禁用，跳过判断，继续分析项目 {project.id}")
-                                        else:
-                                            # 项目不是服务类，继续分析
-                                            log.info(f"项目 {project.id} 不是服务类项目，继续分析")
-
-                                        # 1. 提取资质要求
-                                        requirements = analyzer.extract_requirements(project.evaluation_content)
-                                        # 2. 比对资质
-                                        comparison, decision = analyzer.compare_qualifications(requirements)
-
-                                        # 3. 应用客观分判定配置
-                                        from config import OBJECTIVE_SCORE_CONFIG
-                                        if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
-                                            # 检查是否需要根据客观分丢分阈值调整最终决策
-                                            if "客观分不满分" in decision:
-                                                # 尝试从比对结果中提取丢分信息
-                                                loss_score = 0.0
-                                                # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
-                                                import re
-                                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison)
-                                                if loss_match:
-                                                    loss_score = float(loss_match.group(1))
-
-                                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                                if loss_score <= threshold:
-                                                    # 丢分≤阈值，改为"推荐参与"
-                                                    original_decision = decision
-                                                    decision = "推荐参与"
-                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
-                                            elif "推荐参与" in decision:
-                                                # 检查是否需要根据丢分阈值改为"不推荐参与"
-                                                loss_score = 0.0
-                                                import re
-                                                loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison)
-                                                if loss_match:
-                                                    loss_score = float(loss_match.group(1))
-
-                                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                                if loss_score > threshold:
-                                                    # 丢分>阈值，改为"不推荐参与"
-                                                    original_decision = decision
-                                                    decision = "不推荐参与"
-                                                    comparison += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
-
-                                        update_project(db, project.id, {
-                                            "project_requirements": requirements,
-                                            "ai_extracted_text": requirements,
-                                            "comparison_result": comparison,
-                                            "final_decision": decision or "未判定",
-                                            "status": ProjectStatus.COMPARED
-                                        })
-                                        db.commit()
-                                        processed_count += 1
-                                        log.info(f"项目 {project.id} 分析完成，最终判定：{decision}")
-                                    else:
-                                        log.warning(f"项目 {project.id} 解析内容为空，跳过分析")
-                                        # 自动重置为DOWNLOADED状态，以便重新解析
-                                        log.info(
-                                            f"🔄 项目 {project.id} 解析内容为空，自动重置为DOWNLOADED状态，等待重新解析")
-                                        update_project(db, project.id, {
-                                            "status": ProjectStatus.DOWNLOADED,
-                                            "error_msg": "解析内容为空，已重置状态等待重新解析",
-                                            "evaluation_content": None  # 清空空内容
-                                        })
-                                        db.commit()
-                                except Exception as e:
-                                    error_msg = str(e)[:500]
-                                    log.error(f"AI分析项目失败（项目ID: {project.id}）：{error_msg}", exc_info=True)
-
-                                    # 检查失败次数
-                                    import re
-                                    analysis_fail_count = 0
-                                    if project.error_msg:
-                                        # 检查error_msg中是否包含AI分析失败计数标记
-                                        match = re.search(r'\[AI分析失败(\d+)次\]', project.error_msg)
-                                        if match:
-                                            analysis_fail_count = int(match.group(1)) + 1
-                                        else:
-                                            # 检查是否是相同类型的错误
-                                            base_error = re.sub(r'\[AI分析失败\d+次\].*', '', project.error_msg).strip()
-                                            current_base_error = re.sub(r'\[AI分析失败\d+次\].*', '', error_msg).strip()
-                                            if base_error == current_base_error or current_base_error in base_error:
-                                                analysis_fail_count = 2  # 相同错误，设为2次（下次就是3次）
-                                            else:
-                                                analysis_fail_count = 1  # 不同错误，重新计数
-                                    else:
-                                        analysis_fail_count = 1
-
+                                for _future in as_completed(_futures):
+                                    _pid, _pname = _futures[_future]
                                     try:
-                                        if analysis_fail_count >= 3:
-                                            # 3次都失败，标记为异常
-                                            error_msg_full = f"AI分析失败：{error_msg} [AI分析失败{analysis_fail_count}次] [跳过-多次失败]"
-                                            log.warning(
-                                                f"⚠️ 项目 {project.project_name}（ID：{project.id}）AI分析已失败{analysis_fail_count}次，标记为跳过")
-                                            update_project(db, project.id, {
-                                                "status": ProjectStatus.ERROR,
-                                                "error_msg": error_msg_full
-                                            })
-                                        else:
-                                            # 自动重试：重置状态为PARSED，让它重新进入AI分析流程
-                                            error_msg_full = f"AI分析失败：{error_msg} [AI分析失败{analysis_fail_count}次]"
-                                            log.info(
-                                                f"🔄 项目 {project.project_name}（ID：{project.id}）AI分析失败第{analysis_fail_count}次，自动重置状态准备重试")
-                                            update_project(db, project.id, {
-                                                "status": ProjectStatus.PARSED,  # 重置为PARSED状态，下次分析时会重新处理
-                                                "error_msg": error_msg_full,
-                                                "project_requirements": None,  # 清空之前可能的部分分析结果
-                                                "comparison_result": None,
-                                                "final_decision": None
-                                            })
-                                        db.commit()
-                                    except Exception as update_error:
-                                        log.error(f"更新项目状态失败：{str(update_error)}")
-                                        db.rollback()
-
-                                    continue
+                                        _status, _, _, _detail = _future.result()
+                                    except Exception as _e:
+                                        failed_count += 1
+                                        log.error(f"❌ 项目分析线程异常：ID={_pid}，错误：{str(_e)[:300]}")
+                                        continue
+                                    if _status == "success":
+                                        processed_count += 1
+                                    elif _status == "excluded":
+                                        processed_count += 1
+                                        excluded_count += 1
+                                    else:  # empty / failed
+                                        failed_count += 1
 
                             log.info(f"AI资质分析任务完成，共处理 {processed_count}/{len(projects)} 个项目")
                         finally:
@@ -4923,38 +4666,7 @@ def run_full_process():
 
                             # 应用客观分判定配置
                             from config import OBJECTIVE_SCORE_CONFIG
-                            if OBJECTIVE_SCORE_CONFIG.get("enable_loss_score_adjustment", True):
-                                # 检查是否需要根据客观分丢分阈值调整最终决策
-                                if "客观分不满分" in final_decision:
-                                    # 尝试从比对结果中提取丢分信息
-                                    loss_score = 0.0
-                                    # 简单的丢分提取逻辑，实际项目中可能需要更复杂的解析
-                                    import re
-                                    loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                                    if loss_match:
-                                        loss_score = float(loss_match.group(1))
-
-                                    threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                    if loss_score <= threshold:
-                                        # 丢分≤阈值，改为"推荐参与"
-                                        original_decision = final_decision
-                                        final_decision = "推荐参与"
-                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
-                                elif "推荐参与" in final_decision:
-                                    # 检查是否需要根据丢分阈值改为"不推荐参与"
-                                    loss_score = 0.0
-                                    import re
-                                    loss_match = re.search(r'丢分.*?(\d+\.?\d*)分', comparison_result)
-                                    if loss_match:
-                                        loss_score = float(loss_match.group(1))
-
-                                    threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                    if loss_score > threshold:
-                                        # 丢分>阈值，改为"不推荐参与"
-                                        original_decision = final_decision
-                                        final_decision = "不推荐参与"
-                                        comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
-
+                            # 最终判定与丢分阈值调整已在 compare_qualifications 内统一处理（见后校验逻辑），此处不再二次调整
                             compare_elapsed = time.time() - compare_start_time
                             log.info(
                                 f"项目 {project.id} 资质比对完成，耗时 {compare_elapsed:.2f} 秒，最终判定：{final_decision}")
@@ -6430,20 +6142,25 @@ def render_task_scheduler():
                 enabled = st.checkbox("立即启用", value=True, help="创建后是否立即启用该任务")
 
             # 平台选择
+            # “全部”=所有平台；“全部国企采购平台”=除政采云(zhejiang)外的所有平台（与主爬虫界面一致）
             available_platforms = get_available_platforms()
-            platform_options = ["全部"] + list(available_platforms.values())
+            platform_options = ["全部", "全部国企采购平台"] + list(available_platforms.values())
             selected_platform_name = st.selectbox(
                 "选择爬取平台",
                 options=platform_options,
                 index=0,
-                help="选择要爬取的平台，'全部'表示爬取所有平台"
+                help="选择要爬取的平台。'全部'=所有平台；'全部国企采购平台'=除政采云外的所有平台"
             )
 
-            # 将平台名称转换为平台代码
+            # 将平台名称转换为平台代码 / 平台列表
             selected_platform_code = None
-            if selected_platform_name != "全部":
+            if selected_platform_name == "全部":
+                enabled_platforms = None
+            elif selected_platform_name == "全部国企采购平台":
+                enabled_platforms = [code for code in available_platforms if code != "zhejiang"]
+            else:
                 selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
-            enabled_platforms = [selected_platform_code] if selected_platform_code else None
+                enabled_platforms = [selected_platform_code] if selected_platform_code else None
 
             submitted = st.form_submit_button("创建定时任务", width='stretch')
 

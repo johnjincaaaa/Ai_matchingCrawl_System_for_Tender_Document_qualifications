@@ -7,6 +7,9 @@
 
 import sys
 import os
+import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 # 添加项目根目录到Python路径
@@ -39,6 +42,10 @@ try:
 except Exception as e:
     logger.error(f"❌ 导入项目模块失败: {str(e)}", exc_info=True)
     sys.exit(1)
+
+
+# 单项目分析worker抽到 ai/analysis_worker.py，与 app.py 共享，避免逻辑重复
+from ai.analysis_worker import analyze_one_project as _analyze_one_project
 
 
 def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, enabled_platforms=None):
@@ -160,241 +167,46 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
                         logger.info("✅ 没有待分析的项目，所有项目已处理完成")
                         break  # 没有待处理项目，退出循环
                     
+                    # 收集待处理项目ID（不跨线程共享ORM对象/Session）
+                    project_infos = [(p.id, p.project_name) for p in projects]
+
                     success_count = 0
                     error_count = 0
-                    
-                    for project in projects:
-                        try:
-                            if not project.evaluation_content:
-                                logger.warning(f"项目 {project.id} 解析内容为空，跳过分析")
-                                # 自动重置为DOWNLOADED状态，以便重新解析
-                                logger.info(f"🔄 项目 {project.id} 解析内容为空，自动重置为DOWNLOADED状态，等待重新解析")
-                                update_project(db, project.id, {
-                                    "status": ProjectStatus.DOWNLOADED,
-                                    "error_msg": "解析内容为空，已重置状态等待重新解析",
-                                    "evaluation_content": None  # 清空空内容
-                                })
-                                db.commit()
-                                error_count += 1
-                                continue
-                            
-                            logger.info(f"开始分析项目：{project.project_name}（ID：{project.id}）")
+                    excluded_count = 0
 
-                            # 前置过滤A：非招标文件（中标结果/更正/图纸/工程量清单等）→ 跳过AI分析，直接排除
-                            try:
-                                from utils.pre_filter import check_non_tender, check_bid_security
-                                _nt_hit, _nt_reason = check_non_tender(project.project_name, project.file_path)
-                            except Exception as _e:
-                                logger.warning(f"前置过滤(非招标)调用失败，跳过该过滤：{_e}")
-                                _nt_hit, _nt_reason = False, ""
-                            if _nt_hit:
-                                logger.info(f"⏭️ 项目 {project.id} {_nt_reason}，跳过AI分析并排除")
-                                update_project(db, project.id, {
-                                    "status": ProjectStatus.EXCLUDED,
-                                    "error_msg": _nt_reason,
-                                })
-                                db.commit()
-                                continue
+                    # 并发线程数（I/O密集：等待DashScope返回，用多线程并发提速）
+                    try:
+                        max_workers = config.AI_CONFIG.get("analysis_concurrency", {}).get("max_workers", 4)
+                    except Exception:
+                        max_workers = 4
+                    max_workers = max(1, min(int(max_workers), len(project_infos)))
+                    logger.info(f"🧵 使用 {max_workers} 个线程并发分析 {len(project_infos)} 个项目")
 
-                            # 前置过滤B：投标保证金 → 优先AI语义判断（正确识别"不需要投标保证金"及
-                            # 履约/质量保证金），未启用或不可用时回退关键词过滤；需要投标保证金则设为不推荐
+                    # 每个worker内部自建DB session；analyzer实例可安全共享
+                    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ai-analyze") as executor:
+                        future_to_info = {
+                            executor.submit(_analyze_one_project, analyzer, pid, pname): (pid, pname)
+                            for pid, pname in project_infos
+                        }
+                        for future in as_completed(future_to_info):
+                            pid, pname = future_to_info[future]
                             try:
-                                from config import AI_CONFIG as _AI_CFG
-                                if _AI_CFG.get("bid_security_check", {}).get("enable", False):
-                                    _bs_hit, _bs_reason = analyzer.check_bid_security_ai(project.evaluation_content, project.project_name)
-                                else:
-                                    _bs_hit, _bs_reason = check_bid_security(project.evaluation_content, project.project_name)
-                            except Exception as _e:
-                                logger.warning(f"前置过滤(投标保证金)调用失败，跳过该过滤：{_e}")
-                                _bs_hit, _bs_reason = False, ""
-                            if _bs_hit:
-                                logger.info(f"⏭️ 项目 {project.id} 需要投标保证金（{_bs_reason}），中断分析并设为不推荐")
-                                update_project(db, project.id, {
-                                    "status": ProjectStatus.EXCLUDED,
-                                    "final_decision": "不推荐",
-                                    "error_msg": f"需要投标保证金：{_bs_reason}",
-                                })
-                                db.commit()
-                                continue
-
-                            # 0. 先判断是否是服务类项目
-                            is_service, reason = analyzer.is_service_project(project.evaluation_content)
-                            
-                            # 检查是否是因为功能被禁用而返回False
-                            try:
-                                service_check_enabled = config.AI_CONFIG.get("service_check", {}).get("enable", False)
-                                enable_keyword_check = config.AI_CONFIG.get("qualification_keyword_check", {}).get("enable", False)
+                                status, _pid, _pname, detail = future.result()
                             except Exception as e:
-                                logger.warning(f"访问config.AI_CONFIG失败，使用默认值：{str(e)}")
-                                service_check_enabled = False  # 默认禁用服务类检查
-                                enable_keyword_check = False  # 默认禁用关键词检查
-                            
-                            if is_service and service_check_enabled:
-                                # 只有当服务类判断功能启用且项目确实是服务类时，才标记为已排除
-                                logger.info(f"⚠️ 项目 {project.id} 是服务类项目，标记为已排除：{reason}")
-                                # 更新项目状态为已排除，而不是删除，避免下次重复爬取
-                                update_project(db, project.id, {
-                                    "status": ProjectStatus.EXCLUDED,
-                                    "error_msg": f"服务类项目：{reason}"
-                                })
-                                db.commit()
-                                logger.info(f"✅ 服务类项目已标记为已排除：{project.project_name}（ID：{project.id}）")
-                                continue  # 跳过后续分析
-                            elif is_service and not service_check_enabled:
-                                # 当服务类判断功能被禁用时，跳过判断，继续分析所有项目
-                                logger.info(f"服务类判断功能已禁用，跳过判断，继续分析项目 {project.id}")
-                            else:
-                                # 项目不是服务类，继续分析
-                                logger.info(f"项目 {project.id} 不是服务类项目，继续分析")
-                            
-                            # 检查项目是否包含资质相关关键词（如果包含则删除，避免不必要的分析）
-                            
-                            has_qualification_keywords = False
-                            matched_keywords = []
-                            
-                            if enable_keyword_check:
-                                qualification_keywords = ['资质', '许可证', '认证', '备案', '执业资格', '许可', '等级证书']
-                                
-                                for keyword in qualification_keywords:
-                                    if keyword in project.evaluation_content:
-                                        has_qualification_keywords = True
-                                        matched_keywords.append(keyword)
-                                
-                                if has_qualification_keywords:
-                                    reason = f"项目包含资质相关关键词：{', '.join(matched_keywords)}"
-                                    logger.info(f"⚠️ 项目 {project.id} 包含资质关键词，标记为已排除：{reason}")
-                                    # 更新项目状态为已排除，而不是删除，避免下次重复爬取
-                                    update_project(db, project.id, {
-                                        "status": ProjectStatus.EXCLUDED,
-                                        "error_msg": f"含资质关键词：{reason}"
-                                    })
-                                    db.commit()
-                                    logger.info(f"✅ 含资质关键词项目已标记为已排除：{project.project_name}（ID：{project.id}）")
-                                    continue  # 跳过后续分析
-                                
-                                logger.info(f"项目 {project.id} 不包含资质关键词，继续分析")
-                            else:
-                                logger.info(f"资质关键词检查已禁用，跳过检查，继续分析项目 {project.id}")
-                            
-                            # 1. 提取资质要求（与流程控制保持一致）
-                            project_requirements = analyzer.extract_requirements(project.evaluation_content)
-                            
-                            # 2. 比对资质（与流程控制保持一致，使用AI进行详细比对）
-                            comparison_result, final_decision = analyzer.compare_qualifications(project_requirements)
-                            
-                            # 3. 根据丢分阈值调整最终决策（与流程控制保持一致）
-                            from config import OBJECTIVE_SCORE_CONFIG
-                            import re
+                                error_count += 1
+                                logger.error(f"❌ 项目分析线程异常：ID={pid}，错误：{str(e)[:300]}")
+                                continue
+                            if status == "success":
+                                success_count += 1
+                            elif status == "excluded":
+                                excluded_count += 1
+                            elif status == "empty":
+                                error_count += 1
+                            else:  # failed
+                                error_count += 1
 
-                            def _extract_loss_score(text: str) -> float:
-                                loss = 0.0
-                                # 优先通过“客观分总满分 / 客观分可得分”计算丢分
-                                total_m = re.search(r'客观分总满分[：: ]*([0-9]+\.?[0-9]*)分', text)
-                                gain_m = re.search(r'客观分可得分[：: ]*([0-9]+\.?[0-9]*)分', text)
-                                if total_m and gain_m:
-                                    try:
-                                        total_s = float(total_m.group(1))
-                                        gain_s = float(gain_m.group(1))
-                                        loss = max(total_s - gain_s, 0.0)
-                                    except ValueError:
-                                        loss = 0.0
-                                # 如果仍为0，再尝试匹配“丢分/失分 X 分”
-                                if loss == 0.0:
-                                    m = re.search(r'[丢失]分.*?([0-9]+\.?[0-9]*)分', text)
-                                    if m:
-                                        try:
-                                            loss = float(m.group(1))
-                                        except ValueError:
-                                            loss = 0.0
-                                return loss
+                    logger.info(f"✅ 第 {current_round} 轮并发分析结束（成功：{success_count}，排除：{excluded_count}，失败/空：{error_count}）")
 
-                            if "客观分不满分" in final_decision:
-                                # 检查是否需要根据丢分阈值改为"推荐参与"
-                                loss_score = _extract_loss_score(comparison_result)
-                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                if loss_score <= threshold:
-                                    # 丢分≤阈值，改为"推荐参与"
-                                    original_decision = final_decision
-                                    final_decision = "推荐参与"
-                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：推荐参与"
-                            elif "推荐参与" in final_decision:
-                                # 检查是否需要根据丢分阈值改为"不推荐参与"
-                                loss_score = _extract_loss_score(comparison_result)
-                                threshold = OBJECTIVE_SCORE_CONFIG.get("loss_score_threshold", 1.0)
-                                if loss_score > threshold:
-                                    # 丢分>阈值，改为"不推荐参与"
-                                    original_decision = final_decision
-                                    final_decision = "不推荐参与"
-                                    comparison_result += f"\n\n【丢分阈值调整说明】\n- 原判定：{original_decision}\n- 丢分：{loss_score}分\n- 阈值：{threshold}分\n- 调整后判定：不推荐参与"
-                            
-                            # 4. 确保结果是中文的
-                            if not ("符合" in comparison_result and ("可以参与" in comparison_result or "不可以参与" in comparison_result)):
-                                comparison_result = f"资质比对结果：{comparison_result}\n\n（注：以上为AI原始输出，已转换为中文显示）"
-                            
-                            # 5. 更新项目状态（与流程控制保持一致）
-                            update_project(db, project.id, {
-                                "project_requirements": project_requirements,
-                                "ai_extracted_text": project_requirements,  # 保存AI提取的原始文本
-                                "comparison_result": comparison_result,
-                                "final_decision": final_decision or "未判定",
-                                "status": ProjectStatus.COMPARED
-                            })
-                            
-                            success_count += 1
-                            logger.info(f"✅ 项目分析完成：{project.project_name}（成功：{success_count}，失败：{error_count}）")
-                            
-                        except KeyboardInterrupt:
-                            logger.warning("⚠️ AI分析被用户中断")
-                            raise  # 重新抛出，让上层处理
-                        except Exception as e:
-                            error_count += 1
-                            error_msg = str(e)[:500]
-                            
-                            # 检查失败次数
-                            import re
-                            analysis_fail_count = 0
-                            if project.error_msg:
-                                # 检查error_msg中是否包含AI分析失败计数标记
-                                match = re.search(r'\[AI分析失败(\d+)次\]', project.error_msg)
-                                if match:
-                                    analysis_fail_count = int(match.group(1)) + 1
-                                else:
-                                    # 检查是否是相同类型的错误
-                                    base_error = re.sub(r'\[AI分析失败\d+次\].*', '', project.error_msg).strip()
-                                    current_base_error = re.sub(r'\[AI分析失败\d+次\].*', '', error_msg).strip()
-                                    if base_error == current_base_error or current_base_error in base_error:
-                                        analysis_fail_count = 2  # 相同错误，设为2次（下次就是3次）
-                                    else:
-                                        analysis_fail_count = 1  # 不同错误，重新计数
-                            else:
-                                analysis_fail_count = 1
-                            
-                            if analysis_fail_count >= 3:
-                                # 3次都失败，标记为异常
-                                error_msg_full = f"AI分析失败：{error_msg} [AI分析失败{analysis_fail_count}次] [跳过-多次失败]"
-                                logger.warning(f"⚠️ 项目 {project.project_name}（ID：{project.id}）AI分析已失败{analysis_fail_count}次，标记为跳过")
-                                update_project(db, project.id, {
-                                    "status": ProjectStatus.ERROR,
-                                    "error_msg": error_msg_full
-                                })
-                            else:
-                                # 自动重试：重置状态为PARSED，让它重新进入AI分析流程
-                                error_msg_full = f"AI分析失败：{error_msg} [AI分析失败{analysis_fail_count}次]"
-                                logger.info(f"🔄 项目 {project.project_name}（ID：{project.id}）AI分析失败第{analysis_fail_count}次，自动重置状态准备重试")
-                                update_project(db, project.id, {
-                                    "status": ProjectStatus.PARSED,  # 重置为PARSED状态，下次分析时会重新处理
-                                    "error_msg": error_msg_full,
-                                    "project_requirements": None,  # 清空之前可能的部分分析结果
-                                    "comparison_result": None,
-                                    "final_decision": None
-                                })
-                            
-                            logger.error(f"❌ 项目分析失败：ID={project.id}，错误：{error_msg}")
-                            # 继续处理下一个项目，不中断整个任务
-                            continue
-                    
-                    logger.info(f"✅ 第 {current_round} 轮AI分析完成（成功：{success_count}，失败：{error_count}）")
-                    
                     # 检查是否还有待处理的项目（DOWNLOADED或PARSED状态）
                     remaining_downloaded = db.query(TenderProject).filter(
                         TenderProject.status == ProjectStatus.DOWNLOADED
