@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 from utils.log import log
+from spider.base_spider import NO_ATTACHMENT
 from spider.platforms.quzhou.config import (
     BASE_URL,
     LIST_URL_TEMPLATE,
@@ -459,14 +460,10 @@ def get_doc_detail(
                                 break
             
             if not attach_guid:
-                log.warning(f"未找到下载链接: {detail_url}")
-                # 调试：输出HTML片段以便排查
-                download_div = soup.find('div', class_='download')
-                if download_div:
-                    log.debug(f"找到download div，内容: {str(download_div)[:500]}")
-                if attempt < retry_times:
-                    continue
-                return None
+                # 页面成功解析但确实无附件链接（纯正文公告/公示）→ 无附件，非请求失败。
+                # 直接返回 NO_ATTACHMENT 让上层标记排除，不再无谓重试。
+                log.info(f"详情页无附件（纯正文公告）: {detail_url}")
+                return NO_ATTACHMENT
             
             log.debug(f"找到下载信息: attachGuid={attach_guid[:20]}..., appUrlFlag={app_url_flag}, siteGuid={site_guid[:20] if site_guid else None}...")
             

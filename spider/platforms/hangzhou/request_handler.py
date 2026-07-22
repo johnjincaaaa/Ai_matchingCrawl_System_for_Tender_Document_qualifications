@@ -233,10 +233,21 @@ def download_file(session, fileServiceId, save_path, headers=None, cookies=None,
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-            
-            log.info(f"文件下载成功: {save_path}")
+
+            # 校验：空文件/过小(极可能是错误页或空响应)视为失败，删除残留避免落库脏文件
+            import os as _os
+            if not _os.path.exists(save_path) or _os.path.getsize(save_path) < 100:
+                log.error(f"下载文件为空或过小(疑似错误页): {save_path}")
+                try:
+                    if _os.path.exists(save_path):
+                        _os.remove(save_path)
+                except Exception:
+                    pass
+                return False
+
+            log.info(f"文件下载成功: {save_path} (大小: {_os.path.getsize(save_path)//1024}KB)")
             return True
-            
+
         except Exception as e:
             log.error(f"保存文件失败: {save_path}, 错误: {str(e)}")
             return False

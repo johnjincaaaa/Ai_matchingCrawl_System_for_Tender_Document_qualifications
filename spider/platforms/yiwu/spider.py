@@ -14,12 +14,12 @@ try:
     from ...base_spider import BaseSpider
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
-    from .request_handler import get_project_list, get_doc_detail, download_file
+    from .request_handler import get_project_list, get_doc_detail, download_file, get_detail_body_text, NO_ATTACHMENT
 except ImportError:
     from spider.base_spider import BaseSpider
     from spider.spider_manager import SpiderManager
     from spider.platforms.yiwu.config import PLATFORM_CONFIG
-    from spider.platforms.yiwu.request_handler import get_project_list, get_doc_detail, download_file
+    from spider.platforms.yiwu.request_handler import get_project_list, get_doc_detail, download_file, get_detail_body_text, NO_ATTACHMENT
 
 
 @SpiderManager.register
@@ -143,7 +143,13 @@ class YiWuTenderSpider(BaseSpider):
                     processed_ids.add(project_id)
 
                     file_path, file_format = self._download_document(session, project_id, project_data)
-                    if file_path:
+                    if file_path == NO_ATTACHMENT:
+                        # 详情页无附件（纯正文公告/公示）：标记排除，不当"下载失败"，不重试。
+                        # 正文已在 _download_document 里回填到 evaluation_content（若抓到）。
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情页无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情页无附件，标记为已排除")
+                    elif file_path:
                         project_data["file_path"] = file_path
                         project_data["file_format"] = file_format
 
@@ -260,8 +266,18 @@ class YiWuTenderSpider(BaseSpider):
                 cookies=self.cookies,
             )
 
+            # 详情页确实无附件（纯正文公告）：抓正文回填，交由上层标记排除、不当失败
+            if download_url == NO_ATTACHMENT:
+                body = get_detail_body_text(
+                    session=session, detail_url=detail_url,
+                    headers=self.headers_detail, cookies=self.cookies,
+                )
+                if body:
+                    project_data["evaluation_content"] = body
+                return NO_ATTACHMENT, None
+
             if not download_url:
-                log.warning(f"项目 {project_id} 无法获取下载链接，跳过下载")
+                log.warning(f"项目 {project_id} 无法获取下载链接（请求失败），跳过下载")
                 return None, None
 
             # 准备文件保存路径
@@ -288,6 +304,9 @@ class YiWuTenderSpider(BaseSpider):
                 if not file_path.endswith(f".{file_ext}"):
                     new_path = file_path.rsplit(".", 1)[0] + f".{file_ext}"
                     if os.path.exists(file_path):
+                        # 目标已存在(重复下载/历史残留)会导致 Windows os.rename 报错，先删除
+                        if os.path.exists(new_path):
+                            os.remove(new_path)
                         os.rename(file_path, new_path)
                     file_path = new_path
                 return file_path, file_ext

@@ -8,13 +8,13 @@ from datetime import datetime
 from typing import Optional, Tuple
 # 兼容相对导入和绝对导入
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT, extract_detail_body_text
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
     from .request_handler import get_doc_list, get_doc_detail, download_file
 except ImportError:
     # 如果相对导入失败，尝试绝对导入
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT, extract_detail_body_text
     from spider.spider_manager import SpiderManager
     from spider.platforms.jiaxing.config import PLATFORM_CONFIG
     from spider.platforms.jiaxing.request_handler import get_doc_list, get_doc_detail, download_file
@@ -140,16 +140,27 @@ class JiaXingTenderSpider(BaseSpider):
                     file_path, file_format = self._download_document(
                         session, project_id, project_data
                     )
-                    
-                    # 如果没有文件（找不到attachGuid或下载失败），直接跳过，不保存也不计入配额
-                    if not file_path:
-                        log.debug(f"项目 {project_id} 无法获取文件，跳过保存（不计入配额）")
+
+                    if file_path == NO_ATTACHMENT:
+                        # 详情页无附件（纯正文公告/公示）：入库并标记排除（不再静默丢弃、
+                        # 避免下轮重复请求），正文已在 _download_document 里回填。
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情页无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情页无附件，标记为已排除")
+                        saved_project = save_project(self.db, project_data)
+                        projects.append(saved_project)
+                        total_count += 1
                         continue
-                    
+
+                    # 真正的下载失败（请求失败）：跳过不保存，保留下轮重试
+                    if not file_path:
+                        log.debug(f"项目 {project_id} 下载失败（请求失败），跳过保存（不计入配额）")
+                        continue
+
                     # 只有成功下载文件的项目才保存到数据库
                     project_data["file_path"] = file_path
                     project_data["file_format"] = file_format
-                    
+
                     # 保存项目
                     saved_project = save_project(self.db, project_data)
                     projects.append(saved_project)
@@ -278,9 +289,20 @@ class JiaXingTenderSpider(BaseSpider):
                 cookies=self.cookies
             )
             
+            # 详情页无附件（纯正文公告/公示）→ 抓正文回填，交由上层标记排除、不当失败
+            if attach_guid == NO_ATTACHMENT:
+                try:
+                    resp = session.get(detail_url, headers=self.headers_detail,
+                                       cookies=self.cookies, timeout=15)
+                    body = extract_detail_body_text(resp.text)
+                    if body:
+                        project_data["evaluation_content"] = body
+                except Exception as _e:
+                    log.warning(f"项目 {project_id} 抓取正文失败: {_e}")
+                return NO_ATTACHMENT, None
+
             if not attach_guid:
-                # 静默处理：找不到attachGuid的项目直接跳过，不显示警告
-                log.debug(f"项目 {project_id} 无法获取attachGuid，跳过下载")
+                log.warning(f"项目 {project_id} 无法获取attachGuid（请求失败），将保留重试")
                 return None, None
             
             # 构建文件保存路径

@@ -7,13 +7,13 @@ import time
 from datetime import datetime
 # 兼容相对导入和绝对导入
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
     from .request_handler import get_doc_list, get_doc_detail, download_file
 except ImportError:
     # 如果相对导入失败，尝试绝对导入
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT
     from spider.spider_manager import SpiderManager
     from spider.platforms.hangzhou.config import PLATFORM_CONFIG
     from spider.platforms.hangzhou.request_handler import get_doc_list, get_doc_detail, download_file
@@ -144,10 +144,15 @@ class HangZhouTenderSpider(BaseSpider):
                     file_path, file_format = self._download_document(
                         session, project_id, project_data
                     )
-                    if file_path:
+                    if file_path == NO_ATTACHMENT:
+                        # 详情无附件（纯正文公告/公示）：标记排除，不当"下载失败"、不重试
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情无附件，标记为已排除")
+                    elif file_path:
                         project_data["file_path"] = file_path
                         project_data["file_format"] = file_format
-                    
+
                     # 保存项目
                     saved_project = save_project(self.db, project_data)
                     projects.append(saved_project)
@@ -264,15 +269,16 @@ class HangZhouTenderSpider(BaseSpider):
             )
             
             if not detail_result or detail_result.get("code") != 200:
-                log.warning(f"获取项目详情失败: {project_id}")
+                log.warning(f"获取项目详情失败（请求失败），将保留重试: {project_id}")
                 return None, None
-            
+
             detail_data = detail_result.get("data", {})
             file_list = detail_data.get("list", [])
-            
+
             if not file_list:
-                log.warning(f"项目 {project_id} 没有附件文件")
-                return None, None
+                # 详情接口成功但确实无附件（纯正文公告/公示）→ 标记排除，不当下载失败
+                log.info(f"项目 {project_id} 详情无附件（纯正文公告），标记排除")
+                return NO_ATTACHMENT, None
             
             # 查找招标文件（fileType=7通常是电子招标文件）
             target_file = None

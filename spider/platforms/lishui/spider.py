@@ -12,12 +12,12 @@ from utils.db import save_project, ProjectStatus
 from config import FILES_DIR
 
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT, extract_detail_body_text
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
     from .request_handler import get_doc_list, get_doc_detail, download_file, create_session
 except ImportError:
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT, extract_detail_body_text
     from spider.spider_manager import SpiderManager
     from spider.platforms.lishui.config import PLATFORM_CONFIG
     from spider.platforms.lishui.request_handler import get_doc_list, get_doc_detail, download_file, create_session
@@ -98,6 +98,19 @@ class LiShuiTenderSpider(BaseSpider):
                     processed_ids.add(project_id)
 
                     file_path, file_format = self._download_document(session, project_id, project_data)
+
+                    if file_path == NO_ATTACHMENT:
+                        # 详情页无附件（纯正文公告/公示）：入库并标记排除（不再静默丢弃、
+                        # 避免下轮重复请求），正文已在 _download_document 里回填。
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情页无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情页无附件，标记为已排除")
+                        saved = save_project(self.db, project_data)
+                        projects.append(saved)
+                        total_count += 1
+                        continue
+
+                    # 真正的下载失败（请求失败）：跳过不保存，保留下轮重试
                     if not file_path:
                         continue
 
@@ -178,6 +191,17 @@ class LiShuiTenderSpider(BaseSpider):
                 headers=self.headers_detail,
                 cookies=self.cookies,
             )
+            # 详情页无附件（纯正文公告）→ 抓正文回填，交由上层标记排除、不当失败
+            if attach_guid == NO_ATTACHMENT:
+                try:
+                    resp = session.get(detail_url, headers=self.headers_detail,
+                                       cookies=self.cookies, timeout=15)
+                    body = extract_detail_body_text(resp.text)
+                    if body:
+                        project_data["evaluation_content"] = body
+                except Exception as _e:
+                    log.warning(f"项目 {project_id} 抓取正文失败: {_e}")
+                return NO_ATTACHMENT, None
             if not attach_guid:
                 return None, None
 

@@ -9,6 +9,7 @@ import time
 from typing import Optional, Dict, Any
 from urllib.parse import quote
 from utils.log import log
+from spider.base_spider import NO_ATTACHMENT
 from spider.platforms.ningbo.config import (
     API_LIST_URL, API_FILE_URL, API_DOWNLOAD_BASE_URL,
     HEADERS_LIST, HEADERS_DOWNLOAD, COOKIES, get_access_token
@@ -169,7 +170,7 @@ def get_file_url(session: requests.Session, prj_id: str,
             if isinstance(result, dict) and result.get("code") == 1 and "data" in result:
                 data = result.get("data", {})
                 rows = data.get("rows", [])
-                
+
                 if rows and len(rows) > 0:
                     # 取第一个文件的URL
                     file_url = rows[0].get("FileUrl")
@@ -178,12 +179,11 @@ def get_file_url(session: requests.Session, prj_id: str,
                     else:
                         log.warning(f"项目 {prj_id} 的文件列表中没有找到FileUrl")
                 else:
-                    log.warning(f"项目 {prj_id} 的文件列表为空")
-                
-                if attempt < retry_times:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                return None
+                    log.info(f"项目 {prj_id} 的文件列表为空（纯正文公告，无附件）")
+
+                # 接口成功返回（code==1）但确实无可下载附件：这是"无附件"，不是请求失败。
+                # 直接返回 NO_ATTACHMENT 让上层标记排除，不再无谓重试。
+                return NO_ATTACHMENT
             else:
                 error_msg = result.get("msg", "未知错误")
                 error_code = result.get("code", 0)

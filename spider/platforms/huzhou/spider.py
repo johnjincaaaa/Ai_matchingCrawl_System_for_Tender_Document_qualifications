@@ -13,12 +13,12 @@ from config import FILES_DIR
 
 # 兼容相对导入和绝对导入
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT, extract_detail_body_text
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
     from .request_handler import get_doc_list, get_doc_detail, download_file
 except ImportError:
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT, extract_detail_body_text
     from spider.spider_manager import SpiderManager
     from spider.platforms.huzhou.config import PLATFORM_CONFIG
     from spider.platforms.huzhou.request_handler import get_doc_list, get_doc_detail, download_file
@@ -132,16 +132,27 @@ class HuZhouTenderSpider(BaseSpider):
                     file_path, file_format = self._download_document(
                         session, project_id, project_data
                     )
-                    
-                    # 如果没有文件（找不到attachGuid或下载失败），直接跳过，不保存也不计入配额
+
+                    if file_path == NO_ATTACHMENT:
+                        # 详情页无附件（纯正文公告/公示）：入库并标记排除（不再静默丢弃、
+                        # 避免下轮重复请求），正文已在 _download_document 里回填。
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情页无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情页无附件，标记为已排除")
+                        saved_project = save_project(self.db, project_data)
+                        projects.append(saved_project)
+                        total_count += 1
+                        continue
+
+                    # 真正的下载失败（请求失败）：跳过不保存，保留下轮重试
                     if not file_path:
-                        log.debug(f"项目 {project_id} 无法获取文件，跳过保存（不计入配额）")
+                        log.debug(f"项目 {project_id} 下载失败（请求失败），跳过保存（不计入配额）")
                         continue
 
                     # 只有成功下载文件的项目才保存到数据库
                     project_data["file_path"] = file_path
                     project_data["file_format"] = file_format
-                    
+
                     # 保存项目
                     saved_project = save_project(self.db, project_data)
                     projects.append(saved_project)
@@ -263,14 +274,26 @@ class HuZhouTenderSpider(BaseSpider):
                 return None, None
 
             # 详情页 -> 全部附件（attach_guid 保留完整 A@B，含 site_guid）
+            # get_doc_detail：请求失败返回 None，页面OK但无附件返回 []
             attachments = get_doc_detail(
                 session=session,
                 detail_url=detail_url,
                 headers=self.headers_detail,
             )
-            if not attachments:
-                log.debug(f"项目 {project_id} 详情页无附件，跳过下载")
+            if attachments is None:
+                log.warning(f"项目 {project_id} 详情页请求失败，将保留重试")
                 return None, None
+            if not attachments:
+                # 页面OK但确实无附件（纯正文公告/公示）→ 抓正文回填，交上层标记排除
+                log.info(f"项目 {project_id} 详情页无附件（纯正文公告）")
+                try:
+                    resp = session.get(detail_url, headers=self.headers_detail, timeout=15)
+                    body = extract_detail_body_text(resp.text)
+                    if body:
+                        project_data["evaluation_content"] = body
+                except Exception as _e:
+                    log.warning(f"项目 {project_id} 抓取正文失败: {_e}")
+                return NO_ATTACHMENT, None
 
             # 优先下载“招标文件正文”这类正文附件，没有则取第一个
             keyword = PLATFORM_CONFIG.get("attach_keyword", "")

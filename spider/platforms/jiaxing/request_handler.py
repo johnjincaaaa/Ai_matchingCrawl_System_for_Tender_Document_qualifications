@@ -11,6 +11,7 @@ import re
 import base64
 from typing import Optional, Dict, Any, Tuple
 from utils.log import log
+from spider.base_spider import NO_ATTACHMENT
 from spider.platforms.jiaxing.config import (
     API_LIST_URL, API_DETAIL_URL, API_CAPTCHA_URL, API_DOWNLOAD_URL,
     HEADERS_LIST, HEADERS_DETAIL, COOKIES, BASE_URL, PLATFORM_CONFIG
@@ -152,12 +153,10 @@ def get_doc_detail(session: requests.Session, detail_url: str,
                 log.debug(f"成功提取attachGuid: {attach_guid}")
                 return attach_guid
             else:
-                # 静默处理：找不到attachGuid的项目直接跳过，不显示警告
-                log.debug(f"未找到attachGuid: {detail_url}，跳过该项目")
-                if attempt < retry_times:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                return None
+                # 页面成功打开但确实无附件（纯正文公告/公示）→ 无附件，非请求失败。
+                # 返回 NO_ATTACHMENT 让上层标记排除并抓正文，不再无谓重试。
+                log.info(f"详情页无附件（纯正文公告）: {detail_url}")
+                return NO_ATTACHMENT
             
         except requests.exceptions.Timeout as e:
             if attempt < retry_times:

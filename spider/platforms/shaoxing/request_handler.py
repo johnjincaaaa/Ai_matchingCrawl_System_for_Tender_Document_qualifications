@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 import requests
 from utils.log import log
+from spider.base_spider import NO_ATTACHMENT
 from spider.platforms.shaoxing.config import (
     API_LIST_URL,
     API_DOWNLOAD_URL,
@@ -94,6 +95,12 @@ def download_file(
 
             content_type = response.headers.get("Content-Type", "").lower()
             disposition = response.headers.get("Content-Disposition", "")
+
+            # 内容为 JSON/HTML 说明不是真文件（多为"无附件"或错误页）→ 返回 NO_ATTACHMENT
+            if "application/json" in content_type or "text/html" in content_type:
+                log.info(f"下载响应非文件(Content-Type={content_type})，判定无附件: bulletin_id={bulletin_id}")
+                return NO_ATTACHMENT
+
             file_ext = "pdf"
             if "pdf" in content_type:
                 file_ext = "pdf"
@@ -109,7 +116,34 @@ def download_file(
                     if chunk:
                         f.write(chunk)
 
-            log.info(f"文件下载成功: {save_path}")
+            # 校验文件：过小/魔数不符视为无效（多为错误页或空响应），删除残留
+            import os as _os
+            size = _os.path.getsize(save_path) if _os.path.exists(save_path) else 0
+            if size < 100:
+                log.info(f"下载文件过小({size}字节)，判定无附件: bulletin_id={bulletin_id}")
+                try:
+                    _os.remove(save_path)
+                except Exception:
+                    pass
+                return NO_ATTACHMENT
+
+            # 按魔数校正/确认扩展名
+            with open(save_path, "rb") as fr:
+                head = fr.read(8)
+            if head.startswith(b"%PDF"):
+                file_ext = "pdf"
+            elif head.startswith(b"PK"):
+                file_ext = "docx" if file_ext in ("doc",) else "zip"
+            elif head[:8].lower().startswith(b"<!doctype") or head[:6].lower().startswith(b"<html"):
+                # HTML错误页
+                log.info(f"下载内容是HTML错误页，判定无附件: bulletin_id={bulletin_id}")
+                try:
+                    _os.remove(save_path)
+                except Exception:
+                    pass
+                return NO_ATTACHMENT
+
+            log.info(f"文件下载成功: {save_path} (大小: {size//1024}KB, 类型: {file_ext})")
             return file_ext
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if attempt < retry_times:

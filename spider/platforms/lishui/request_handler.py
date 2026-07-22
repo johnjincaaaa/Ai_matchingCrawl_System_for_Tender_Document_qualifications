@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from utils.log import log
+from spider.base_spider import NO_ATTACHMENT
 from spider.platforms.lishui.config import (
     BASE_URL,
     LIST_URL_TEMPLATE,
@@ -153,7 +154,9 @@ def get_doc_detail(
                 if "招标文件" in context:
                     return guid
 
-            return None
+            # 页面成功打开但确实无可用附件（纯正文公告/公示）→ 无附件，非请求失败
+            log.info(f"详情页无附件（纯正文公告）: {detail_url}")
+            return NO_ATTACHMENT
         except Exception as e:
             if attempt < retry_times:
                 time.sleep(2 * (attempt + 1))

@@ -7,13 +7,13 @@ from datetime import datetime
 from typing import Optional, Tuple
 # 兼容相对导入和绝对导入
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG, get_access_token
     from .request_handler import get_doc_list, get_file_url, download_file
 except ImportError:
     # 如果相对导入失败，尝试绝对导入
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT
     from spider.spider_manager import SpiderManager
     from spider.platforms.ningbo.config import PLATFORM_CONFIG, get_access_token
     from spider.platforms.ningbo.request_handler import get_doc_list, get_file_url, download_file
@@ -171,10 +171,16 @@ class NingBoTenderSpider(BaseSpider):
                     file_path, file_format = self._download_document(
                         session, project_id, project_data
                     )
-                    if file_path:
+                    if file_path == NO_ATTACHMENT:
+                        # 详情接口无附件（纯正文公告/公示）：标记排除，不当下载失败、不重试。
+                        # 宁波在 _parse_project 已填了 evaluation_content（编号/类型/报名时间等）。
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情无附件，标记为已排除")
+                    elif file_path:
                         project_data["file_path"] = file_path
                         project_data["file_format"] = file_format
-                    
+
                     # 保存项目
                     saved_project = save_project(self.db, project_data)
                     projects.append(saved_project)
@@ -311,9 +317,13 @@ class NingBoTenderSpider(BaseSpider):
                 prj_id=project_id,
                 headers=self.headers_list
             )
-            
+
+            # 接口成功但确实无附件（纯正文公告）→ 交由上层标记排除，不当下载失败
+            if file_url == NO_ATTACHMENT:
+                return NO_ATTACHMENT, None
+
             if not file_url:
-                log.warning(f"项目 {project_id} 获取文件URL失败")
+                log.warning(f"项目 {project_id} 获取文件URL失败（请求失败），将保留重试")
                 return None, None
             
             # 从file_url中提取文件名

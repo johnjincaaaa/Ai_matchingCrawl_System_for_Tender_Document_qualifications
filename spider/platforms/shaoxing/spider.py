@@ -10,12 +10,12 @@ from utils.db import save_project, ProjectStatus
 from config import FILES_DIR
 
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
     from .request_handler import get_bulletin_list, download_file
 except ImportError:
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT
     from spider.spider_manager import SpiderManager
     from spider.platforms.shaoxing.config import PLATFORM_CONFIG
     from spider.platforms.shaoxing.request_handler import get_bulletin_list, download_file
@@ -117,7 +117,12 @@ class ShaoXingTenderSpider(BaseSpider):
                     processed_ids.add(project_id)
 
                     file_path, file_format = self._download_document(session, project_id, project_data)
-                    if file_path:
+                    if file_path == NO_ATTACHMENT:
+                        # 无附件（纯正文公告/公示）：标记排除，不当"下载失败"、不重试
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 无附件，标记为已排除")
+                    elif file_path:
                         project_data["file_path"] = file_path
                         project_data["file_format"] = file_format
 
@@ -213,14 +218,21 @@ class ShaoXingTenderSpider(BaseSpider):
                 cookies=self.cookies,
             )
 
+            # 下载响应判定为无附件（纯正文公告/错误页）→ 交由上层标记排除，不当失败
+            if file_ext == NO_ATTACHMENT:
+                return NO_ATTACHMENT, None
+
             if file_ext:
                 if not file_path.endswith(f".{file_ext}"):
                     new_path = file_path.rsplit(".", 1)[0] + f".{file_ext}"
+                    # 目标已存在(重复下载/历史残留)会导致 Windows os.rename 报错，先删除
+                    if os.path.exists(new_path):
+                        os.remove(new_path)
                     os.rename(file_path, new_path)
                     file_path = new_path
                 return file_path, file_ext
 
-            log.warning(f"项目 {project_id} 下载文件失败")
+            log.warning(f"项目 {project_id} 下载文件失败（请求失败），将保留重试")
             return None, None
         except Exception as e:
             log.error(f"下载文档失败: {str(e)}", exc_info=True)

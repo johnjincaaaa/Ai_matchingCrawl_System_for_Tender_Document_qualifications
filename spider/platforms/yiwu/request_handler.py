@@ -19,6 +19,10 @@ from spider.platforms.yiwu.config import (
     DEFAULT_LIST_PARAMS,
 )
 
+# get_doc_detail 的专属返回值：页面成功打开但确实无附件（纯正文公告）。
+# 统一复用 base_spider 的哨兵，保证全平台一致（区分"无附件"应抓正文排除、不重试）。
+from spider.base_spider import NO_ATTACHMENT
+
 
 def get_project_list(
     session: requests.Session,
@@ -191,14 +195,15 @@ def get_doc_detail(
                     download_url = download_link
                 else:
                     download_url = urljoin(BASE_URL, '/' + download_link)
-                
+
                 log.debug(f"找到下载链接: {download_url}")
                 return download_url
             else:
-                log.warning(f"未找到下载链接: {detail_url}")
-                if attempt < retry_times:
-                    continue
-                return None
+                # 页面成功打开但确实没有附件（如单一来源公示/中标候选公示/劳保采购等
+                # 纯正文公告），这属于"本就无附件"，不是"请求失败"。返回专属标记以便上层
+                # 正确区分：无附件 → 标记排除并抓正文；请求失败(None) → 保留重试。
+                log.info(f"详情页无附件（纯正文公告）: {detail_url}")
+                return NO_ATTACHMENT
                 
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if attempt < retry_times:
@@ -217,6 +222,42 @@ def get_doc_detail(
                 log.error(f"详情页请求异常，已达最大重试次数: {str(e)}")
                 return None
     return None
+
+
+def get_detail_body_text(
+    session: requests.Session,
+    detail_url: str,
+    headers: Optional[Dict] = None,
+    cookies: Optional[Dict] = None,
+    timeout: int = 15,
+) -> Optional[str]:
+    """抓取详情页正文纯文本（用于无附件的纯正文公告，让AI仍能分析正文）。
+
+    优先取 class 含 'article'/'content'/'detail' 的容器，取不到则退回整页文本。
+    失败返回 None。
+    """
+    try:
+        req_headers = headers.copy() if headers else HEADERS_DETAIL.copy()
+        req_cookies = cookies.copy() if cookies else COOKIES.copy()
+        response = session.get(detail_url, headers=req_headers, cookies=req_cookies, timeout=timeout)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # 优先在常见正文容器里找文本最长的一个
+        candidates = []
+        for kw in ('article-info', 'article', 'content', 'detail', 'xxnr'):
+            for el in soup.find_all(class_=lambda c, k=kw: c and k in c):
+                candidates.append(el.get_text(separator="\n", strip=True))
+        body = max(candidates, key=len) if candidates else ""
+
+        # 容器都取不到时退回整页
+        if len(body) < 30:
+            body = soup.get_text(separator="\n", strip=True)
+
+        return body or None
+    except Exception as e:
+        log.warning(f"抓取详情页正文失败: {str(e)}")
+        return None
 
 
 def download_file(

@@ -11,7 +11,7 @@ from utils.db import save_project, ProjectStatus
 from config import FILES_DIR
 
 try:
-    from ...base_spider import BaseSpider
+    from ...base_spider import BaseSpider, NO_ATTACHMENT
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
     from .request_handler import (
@@ -22,7 +22,7 @@ try:
         download_file,
     )
 except ImportError:
-    from spider.base_spider import BaseSpider
+    from spider.base_spider import BaseSpider, NO_ATTACHMENT
     from spider.spider_manager import SpiderManager
     from spider.platforms.quzhou.config import PLATFORM_CONFIG
     from spider.platforms.quzhou.request_handler import (
@@ -124,7 +124,12 @@ class QuZhouTenderSpider(BaseSpider):
                     file_path, file_format = self._download_document(
                         session, project_id, project_data
                     )
-                    if file_path:
+                    if file_path == NO_ATTACHMENT:
+                        # 详情页无附件（纯正文公告/公示）：标记排除，不当"下载失败"、不重试
+                        project_data["status"] = ProjectStatus.EXCLUDED
+                        project_data["error_msg"] = "详情页无附件（纯正文公告/公示），无标书文件可下载"
+                        log.info(f"⏭️ 项目 {project_id} 详情页无附件，标记为已排除")
+                    elif file_path:
                         project_data["file_path"] = file_path
                         project_data["file_format"] = file_format
 
@@ -239,8 +244,12 @@ class QuZhouTenderSpider(BaseSpider):
                 cookies=self.cookies,
             )
 
+            # 详情页无附件（纯正文公告）→ 交由上层标记排除，不当下载失败
+            if download_info == NO_ATTACHMENT:
+                return NO_ATTACHMENT, None
+
             if not download_info:
-                log.warning(f"项目 {project_id} 无法获取下载信息，跳过下载")
+                log.warning(f"项目 {project_id} 无法获取下载信息（请求失败），将保留重试")
                 return None, None
 
             attach_guid = download_info.get("attachGuid")
@@ -307,6 +316,9 @@ class QuZhouTenderSpider(BaseSpider):
                 if not file_path.endswith(f".{file_ext}"):
                     new_path = file_path.rsplit(".", 1)[0] + f".{file_ext}"
                     if os.path.exists(file_path):
+                        # 目标已存在(重复下载/历史残留)会导致 Windows os.rename 报错，先删除
+                        if os.path.exists(new_path):
+                            os.remove(new_path)
                         os.rename(file_path, new_path)
                     file_path = new_path
                 return file_path, file_ext
