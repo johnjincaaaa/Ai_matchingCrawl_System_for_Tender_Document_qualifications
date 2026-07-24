@@ -84,7 +84,7 @@ def get_doc(url):
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": "\"Windows\""
     }
-    url = "https://www.ywygzc.com/jyxx/002001/002001002/002001002001/20260122/f71315d4-bf8a-4fd4-aad3-203f99148468.html"
+    url = "https://www.ywygzc.com/jyxx/002001/002001002/002001002001/20260722/0c142728-ef8c-4b64-a4da-e140bf9215a2.html"
     response = requests.get(url, headers=headers)
 
     print(response.text)
@@ -176,6 +176,6 @@ def download(doc_url):
         f.write(response.content)
 
 if __name__ == '__main__':
-    get_doc_url(1)
+    # get_doc_url(1)
     get_doc('d')
-    download('https://www.ywygzc.com/hxepointwebbuilder/WebbuilderMIS/attach/downloadZtbAttach.jspx?attachGuid=2ad64248-5e83-4065-b291-d6ed82d59cf2&appUrlFlag=ztb002&siteGuid=953af23a-fbca-4465-8dd6-e06ee568aa24')
+    download('https://www.ywygzc.com/hxepointwebbuilder/WebbuilderMIS/attach/downloadZtbAttach.jspx?attachGuid=3596476f-7f65-4989-90ac-f7020bbff708&appUrlFlag=ztb002&siteGuid=953af23a-fbca-4465-8dd6-e06ee568aa24')

@@ -1,8 +1,10 @@
 """义乌市阳光招标采购平台请求封装"""
 
+import io
 import json
 import os
 import time
+import zipfile
 from typing import Dict, Optional
 from urllib.parse import urljoin, urlparse, parse_qs
 
@@ -260,6 +262,70 @@ def get_detail_body_text(
         return None
 
 
+def _sniff_zip_ext(content: bytes) -> str:
+    """PK 开头的包(OOXML)按中央目录判断真实类型。
+
+    义乌平台的 .docx 里 [Content_Types].xml / customXml / docProps 排在最前，
+    `word/` 目录可能出现在 1000 字节之后，用「前N字节找 word/」会把 docx 误判成
+    zip。这里解析整个 zip 的条目名来准确区分 docx/xlsx/pptx，解析失败才退回 zip。
+    """
+    try:
+        z = zipfile.ZipFile(io.BytesIO(content))
+        names = z.namelist()
+        if any(n.startswith("word/") for n in names):
+            return "docx"
+        if any(n.startswith("xl/") for n in names):
+            return "xlsx"
+        if any(n.startswith("ppt/") for n in names):
+            return "pptx"
+    except Exception:
+        pass
+    return "zip"
+
+
+def _detect_file_ext(download_url: str, content: bytes, content_type: str,
+                     disposition: str) -> str:
+    """综合 magic bytes / Content-Type / Content-Disposition / URL 判断扩展名。
+
+    以文件内容(magic bytes)为最高优先级——义乌平台会把扩展名塞进 Content-Type
+    (如 `.docx;charset=UTF-8`)且不带 Content-Disposition，仅靠 header 关键词匹配
+    会漏判。返回不含点的扩展名字符串。
+    """
+    ct = (content_type or "").lower()
+    disp = (disposition or "").lower()
+
+    # 1) magic bytes 最可靠
+    if content[:4] == b"%PDF":
+        return "pdf"
+    if content[:2] == b"PK":
+        return _sniff_zip_ext(content)
+    if content[:4] == b"Rar!":
+        return "rar"
+    if content[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        # 旧版 OLE 复合文档：doc/xls/ppt，无法仅凭头部细分，取最常见的 doc
+        return "doc"
+
+    # 2) Content-Disposition / Content-Type / URL 里出现的扩展名字面量
+    for src in (disp, ct, urlparse(download_url).path.lower()):
+        for ext in ("docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt", "zip", "rar"):
+            if f".{ext}" in src:
+                return ext
+
+    # 3) Content-Type 语义关键词
+    if "pdf" in ct:
+        return "pdf"
+    if "wordprocessingml" in ct:
+        return "docx"
+    if "spreadsheetml" in ct:
+        return "xlsx"
+    if "word" in ct or "msword" in ct:
+        return "doc"
+    if "zip" in ct:
+        return "zip"
+
+    return "pdf"
+
+
 def download_file(
     session: requests.Session,
     download_url: str,
@@ -298,62 +364,19 @@ def download_file(
             )
             response.raise_for_status()
             
-            # 判断文件类型
-            content_type = response.headers.get("Content-Type", "").lower()
+            # 读取完整内容（OOXML 需要解析整个 zip 中央目录来准确判断类型）
+            content = response.content
+            content_type = response.headers.get("Content-Type", "")
             disposition = response.headers.get("Content-Disposition", "")
-            
-            # 从Content-Disposition或URL中提取文件扩展名
-            file_ext = "pdf"  # 默认扩展名
-            
-            # 方法1：从Content-Disposition中提取
-            if disposition:
-                if '.pdf' in disposition.lower():
-                    file_ext = "pdf"
-                elif '.docx' in disposition.lower() or '.doc' in disposition.lower():
-                    file_ext = "docx" if '.docx' in disposition.lower() else "doc"
-                elif '.zip' in disposition.lower():
-                    file_ext = "zip"
-                elif '.rar' in disposition.lower():
-                    file_ext = "rar"
-            
-            # 方法2：从Content-Type中判断
-            if "pdf" in content_type:
-                file_ext = "pdf"
-            elif "zip" in content_type:
-                file_ext = "zip"
-            elif "word" in content_type or "msword" in content_type:
-                file_ext = "docx" if "wordprocessingml" in content_type else "doc"
-            elif "octet-stream" in content_type:
-                # 尝试从URL中提取扩展名
-                parsed_url = urlparse(download_url)
-                path = parsed_url.path.lower()
-                if '.pdf' in path:
-                    file_ext = "pdf"
-                elif '.docx' in path:
-                    file_ext = "docx"
-                elif '.doc' in path:
-                    file_ext = "doc"
-                elif '.zip' in path:
-                    file_ext = "zip"
-                elif '.rar' in path:
-                    file_ext = "rar"
-            
-            # 方法3：从文件内容判断（检查前几个字节）
-            content = response.content[:10]
-            if content.startswith(b'%PDF'):
-                file_ext = "pdf"
-            elif content.startswith(b'PK') and b'word/' in response.content[:1000]:
-                file_ext = "docx"
-            elif content.startswith(b'PK'):
-                file_ext = "zip"
-            
+
+            # 综合判断文件类型（magic bytes 优先，其次 header/URL）
+            file_ext = _detect_file_ext(download_url, content, content_type, disposition)
+
             # 保存文件
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
+                f.write(content)
+
             file_size_kb = os.path.getsize(save_path) / 1024
             log.info(f"文件下载成功: {save_path} (大小: {file_size_kb:.2f} KB, 类型: {file_ext})")
             return file_ext

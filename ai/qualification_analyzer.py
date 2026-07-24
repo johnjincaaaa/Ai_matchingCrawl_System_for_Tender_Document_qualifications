@@ -185,20 +185,25 @@ def _postcheck_objective_score(comparison_result, held_cert_names=None):
 
 
 def _parse_objective_full_score(comparison_result, fallback=0.0):
-    """解析"客观分总满分"数值，兼容算式写法，且对文中多处"总满分"取最大值。
+    """解析"客观分总满分"数值，兼容算式写法。
 
-    模型输出有两类坑：
-    1. 写成"客观分总满分：3 + 4 + 15 = 22分"，旧正则只捕获第一个操作数(3)，
-       导致总满分被严重低估、丢分被抹平而误判推荐；
-    2. 同一份结果里"客观分总满分"出现多次（先写一个错值，后又更正），
-       此前只取第一处会拿到错值。
+    只认【真正的总满分声明行】——即"客观分总满分"后面（允许中文冒号/空格）
+    **紧跟数字或算式**的行，例如：
+        客观分总满分：4分
+        客观分总满分：3 + 4 + 15 = 22分
+        - 客观分总满分：**67分**（...）
+    而【拒绝】"客观分总满分"后面紧跟中文说明的解释句，例如：
+        客观分总满分 = 所有客观分条目的满分相加，已排除...（报价评分40分已归入主观分）
+    否则解释句里夹带的无关数字（如"报价评分40分"的40）会被误当成总满分，
+    导致丢分虚高、把"满分可参与"误判成"不推荐"。
 
-    因此这里遍历所有"客观分总满分"出现处，每处按 "=N分" > 算式求和 > 第一个数字
-    的优先级取值，最后返回所有取值中的最大者（满分是上界，取大更安全）。
-    全部失败时返回 fallback（逐条累加满分）。
+    多个合法声明行时取**最接近 fallback（逐条累加满分）的那个**：逐条累加满分是
+    最可靠的基准，模型汇总行只用来兜底/补正，避免再次被离群值带偏。
+    解析全部失败时返回 fallback。
     """
     vals = []
-    for m_line in re.finditer(r'客观分总满分[：: ]*([^\n]*)', comparison_result):
+    # 冒号后允许若干空白/加粗星号，然后【必须紧跟数字】才认定是声明行
+    for m_line in re.finditer(r'客观分总满分\s*[：:]\s*\**\s*(?=[0-9])([^\n]*)', comparison_result):
         line = m_line.group(1)
         # 优先取 "= N分" 的最终结果（N 可能被 ** 包裹）
         m_eq = re.search(r'=\s*\**\s*([0-9]+\.?[0-9]*)\s*\**\s*分?', line)
@@ -218,14 +223,24 @@ def _parse_objective_full_score(comparison_result, fallback=0.0):
                     continue
             except ValueError:
                 pass
-        # 退回：取该行第一个数字
-        nums = re.findall(r'([0-9]+\.?[0-9]*)', line)
-        if nums:
+        # 退回：取该行第一个数字（此时行首已确保是数字）
+        m_num = re.match(r'\s*([0-9]+\.?[0-9]*)', line)
+        if m_num:
             try:
-                vals.append(float(nums[0]))
+                vals.append(float(m_num.group(1)))
             except ValueError:
                 pass
-    return max(vals) if vals else fallback
+    if not vals:
+        return fallback
+    # 逐条累加满分(fallback)是最可靠基准。合法声明行里可能仍混入离群大值
+    # （如算式误解析、或声明行本身写错），用 fallback 做上界保护：
+    # 只接受"不超过 fallback 合理倍数(1.5×+2)"的声明值，取其中最大者；
+    # 若全部被判离群，则直接用 fallback。fallback 不可用(<=0)时退回取max。
+    if fallback and fallback > 0:
+        cap = fallback * 1.5 + 2  # 容忍模型汇总略高于逐条累加（价格项口径等小差异）
+        sane = [v for v in vals if v <= cap]
+        return max(sane) if sane else fallback
+    return max(vals)
 
 
 class AIService(ABC):
