@@ -23,16 +23,18 @@ _PLATFORM_DEFAULT_REGION = {
     "衢州市阳光交易服务平台": "衢州市",
 }
 
+# 报告「来源网站」列使用的平台官网入口。以《浙江省各市招标平台汇总.doc》为准。
+# 义乌不在该汇总表内，取爬虫实际来源域名 www.ywygzc.com。
 _PLATFORM_OFFICIAL_URLS = {
     "浙江省政府采购网": "https://zfcg.czt.zj.gov.cn/",
     "杭州市公共资源交易网": "https://ggzy.hzctc.hangzhou.gov.cn/",
-    "嘉兴禾采联综合采购服务平台": "https://jxszwsjb.jiaxing.gov.cn/",
+    "嘉兴禾采联综合采购服务平台": "http://hcl.jxcqgs.cn/",
     "宁波市阳光采购服务平台": "https://ygcg.nbcqjy.org/",
     "绍兴市阳光采购服务平台": "https://ygcg.sxjypt.com/",
-    "湖州市绿色采购服务平台": "https://huzhouztb.epoint.com.cn/",
-    "义乌市阳光招标采购平台": "https://ywjypt.yw.gov.cn/",
-    "丽水市阳光采购服务平台": "https://lssggzy.lishui.gov.cn/",
-    "衢州市阳光交易服务平台": "https://qzszfcg.qz.gov.cn/",
+    "湖州市绿色采购服务平台": "https://www.hzlscgfw.cn/",
+    "义乌市阳光招标采购平台": "https://www.ywygzc.com/",
+    "丽水市阳光采购服务平台": "https://lsygcg.com/jyxx/001001/001001002/001001002001/sec.html",
+    "衢州市阳光交易服务平台": "https://qzygjy.com/",
 }
 
 
