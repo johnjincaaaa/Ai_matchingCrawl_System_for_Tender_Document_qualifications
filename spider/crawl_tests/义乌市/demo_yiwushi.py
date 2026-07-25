@@ -21,9 +21,41 @@ def get_doc_url(page):
         "sec-ch-ua-platform": "\"Windows\""
     }
     url = "https://www.ywygzc.com/inteligentsearch/rest/esinteligentsearch/getFullTextDataNew"
+    # data = {
+    #     "token": "",
+    #     "pn": 0,  # 这是页数，第一页为0，第二页为10，第三页为20，以此类推
+    #     "rn": 10,
+    #     "sdt": "",
+    #     "edt": "",
+    #     "wd": "",
+    #     "inc_wd": "",
+    #     "exc_wd": "",
+    #     "fields": "title;infoa",
+    #     "cnum": "077",
+    #     "sort": "{\"ordernum\":0,\"webdate\":0}",
+    #     "ssort": "title",
+    #     "cl": 500,
+    #     "terminal": "",
+    #     "condition": [
+    #         {
+    #             "equal": "002001",
+    #             "fieldName": "categorynum",
+    #             "isLike": "true",
+    #             "likeType": "2"
+    #         }
+    #     ],
+    #     "time": None,
+    #     "highlights": "content",
+    #     "statistics": None,
+    #     "unionCondition": None,
+    #     "accuracy": "",
+    #     "noParticiple": "",
+    #     "searchRange": None,
+    #     "isBusiness": "1"
+    # }
     data = {
         "token": "",
-        "pn": 0,  # 这是页数，第一页为0，第二页为10，第三页为20，以此类推
+        "pn": 0,
         "rn": 10,
         "sdt": "",
         "edt": "",
@@ -32,13 +64,13 @@ def get_doc_url(page):
         "exc_wd": "",
         "fields": "title;infoa",
         "cnum": "077",
-        "sort": "{\"ordernum\":0,\"webdate\":0}",
+        "sort": "{webdate:0}",
         "ssort": "title",
         "cl": 500,
         "terminal": "",
         "condition": [
             {
-                "equal": "002001",
+                "equal": "002001001001",
                 "fieldName": "categorynum",
                 "isLike": "true",
                 "likeType": "2"
@@ -176,6 +208,6 @@ def download(doc_url):
         f.write(response.content)
 
 if __name__ == '__main__':
-    # get_doc_url(1)
-    get_doc('d')
-    download('https://www.ywygzc.com/hxepointwebbuilder/WebbuilderMIS/attach/downloadZtbAttach.jspx?attachGuid=3596476f-7f65-4989-90ac-f7020bbff708&appUrlFlag=ztb002&siteGuid=953af23a-fbca-4465-8dd6-e06ee568aa24')
+    get_doc_url(1)
+    # get_doc('d')
+    # download('https://www.ywygzc.com/hxepointwebbuilder/WebbuilderMIS/attach/downloadZtbAttach.jspx?attachGuid=3596476f-7f65-4989-90ac-f7020bbff708&appUrlFlag=ztb002&siteGuid=953af23a-fbca-4465-8dd6-e06ee568aa24')

@@ -23,6 +23,36 @@ API_LOGIN_URL = f"{API_BASE_URL}/api/Account/Login"
 LOGIN_ACCOUNT = "13376851006"
 LOGIN_PASSWORD = "Wzy123888!"
 
+# RSA 公钥（与 js/login.js 里 jsencrypt 使用的同一把公钥；SPKI/DER 的 base64 形式）。
+# jsencrypt 采用 RSA PKCS#1 v1.5 填充，可用 Python cryptography 完全复现，
+# 从而在打包成 exe 后无需终端机安装 Node.js。
+RSA_PUBLIC_KEY_B64 = (
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvAKBZE0Ez4lIlFFO1MO2i/RZVKgHMox"
+    "TyVM/WZoiIZRDWV6TzdKYAikE6yb/7nBg4b9NcU0NxmwSTihHngD9n9EDOhYc2IpRsJLjTqd4sgt"
+    "65cE5IeIQiymNZrg6ck8xOLldSeMMSC2fz3UneTIoXunj3rPWgCEwmwYLx2nlh+GUh4lIuV4Lrbp"
+    "ySe1DYUkrLeW2CMnFg4Kd+OjSrd3niJ/v92ZJFGYYBS1fkdZPpvHEAM2yk7oSTGsuZx4/lSCngjO"
+    "+yxs7ppxj5ta57XX6iZPV1baRUmWirU/G+s7HtyVx5Jo2r4hUVjhTnKTvEBK14IsK3dqqXJTabkR"
+    "VKVP5qwIDAQAB"
+)
+
+
+def _encrypt_password_py(password: str):
+    """用 Python cryptography 复现 jsencrypt 的 RSA(PKCS#1 v1.5) 加密。
+
+    成功返回 base64 密文字符串；库不可用或出错时返回 None（由调用方回退 execjs）。
+    """
+    try:
+        import base64
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.serialization import load_der_public_key
+
+        pub = load_der_public_key(base64.b64decode(RSA_PUBLIC_KEY_B64))
+        ciphertext = pub.encrypt(password.encode("utf-8"), padding.PKCS1v15())
+        return base64.b64encode(ciphertext).decode("ascii")
+    except Exception as e:  # 缺 cryptography / 解析失败等
+        log.debug(f"Python RSA 加密不可用，将回退 execjs: {e}")
+        return None
+
 # 获取login.js文件路径（生产代码位置）
 # login.js 位于: spider/platforms/ningbo/js/login.js
 # 注意：不再使用 crawl_tests 目录中的文件，所有必需文件都在生产代码位置
@@ -33,18 +63,11 @@ _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGIN_JS_PATH = os.path.join(_CONFIG_DIR, "js", "login.js")
 LOGIN_JS_PATH = os.path.abspath(LOGIN_JS_PATH)
 
-# 验证文件是否存在
+# login.js 仅在 Python RSA 加密不可用时作为 execjs 后备使用；缺失不再当作错误。
 if not os.path.exists(LOGIN_JS_PATH):
-    log.error(
-        f"❌ login.js 文件不存在于生产代码位置: {LOGIN_JS_PATH}\n"
-        f"请确保以下文件存在于正确位置：\n"
-        f"  - spider/platforms/ningbo/js/login.js\n"
-        f"  - spider/platforms/ningbo/js/package.json\n"
-        f"  - spider/platforms/ningbo/js/node_modules/（已安装依赖）\n"
-        f"项目不再使用 crawl_tests 目录中的文件。"
-    )
+    log.debug(f"login.js 不存在（仅 execjs 后备需要）: {LOGIN_JS_PATH}，将优先使用 Python RSA 加密")
 else:
-    log.debug(f"✓ 使用生产代码位置的 login.js: {LOGIN_JS_PATH}")
+    log.debug(f"✓ execjs 后备可用 login.js: {LOGIN_JS_PATH}")
 
 
 def get_access_token() -> str:
@@ -57,55 +80,52 @@ def get_access_token() -> str:
         access_token字符串，失败返回空字符串
     """
     global EXECJS_AVAILABLE
-    
+
     try:
-        # 运行时动态导入 execjs（支持运行时安装后立即生效）
-        if EXECJS_AVAILABLE is None or not EXECJS_AVAILABLE:
+        # 优先用 Python(cryptography) 复现 jsencrypt 的 RSA 加密——打包成 exe 后
+        # 终端机无需安装 Node.js。失败再回退到 execjs + login.js（开发环境）。
+        encrypted_password = _encrypt_password_py(LOGIN_PASSWORD)
+
+        if not encrypted_password:
+            log.info("Python RSA 不可用，回退 execjs + login.js 获取加密密码")
+            # 运行时动态导入 execjs（支持运行时安装后立即生效）
             try:
                 import execjs
                 EXECJS_AVAILABLE = True
-                log.debug("成功导入 execjs 模块")
-            except ImportError as e:
+            except ImportError:
                 EXECJS_AVAILABLE = False
-                import sys
-                python_path = sys.executable
                 log.error(
-                    f"execjs 模块未安装，无法获取 access_token。\n"
-                    f"当前 Python 路径: {python_path}\n"
-                    f"请在该 Python 环境中安装: pip install PyExecJS\n"
-                    f"或使用: {python_path} -m pip install PyExecJS"
+                    "Python RSA 加密不可用，且 execjs 未安装，无法获取 access_token。"
+                    "请安装 cryptography（推荐）或 PyExecJS + Node.js。"
                 )
                 return ""
-        
-        # 确保 execjs 已导入
-        import execjs
-        
-        # 检查是否有可用的 JavaScript 运行时
-        try:
-            runtime = execjs.get()
-            if not runtime:
-                log.error("未找到可用的 JavaScript 运行时。PyExecJS 需要 Node.js 或其他 JavaScript 运行时。")
+
+            # 检查是否有可用的 JavaScript 运行时
+            try:
+                runtime = execjs.get()
+                if not runtime:
+                    log.error("未找到可用的 JavaScript 运行时。PyExecJS 需要 Node.js 或其他 JavaScript 运行时。")
+                    return ""
+                log.debug(f"使用 JavaScript 运行时: {runtime.name}")
+            except Exception as e:
+                log.error(f"获取 JavaScript 运行时失败: {str(e)}")
                 return ""
-            log.debug(f"使用 JavaScript 运行时: {runtime.name}")
-        except Exception as e:
-            log.error(f"获取 JavaScript 运行时失败: {str(e)}")
-            return ""
-        
-        # 读取login.js文件
-        with open(LOGIN_JS_PATH, 'r', encoding='utf-8') as f:
-            js_data = f.read()
-        
-        # 编译并执行JS函数加密密码
-        # 设置工作目录为 login.js 所在目录，以便 Node.js 能找到 node_modules
-        login_js_dir = os.path.dirname(LOGIN_JS_PATH)
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(login_js_dir)  # 切换到 login.js 所在目录
-            js_compiled = execjs.compile(js_data)
-            encrypted_password = js_compiled.call('a')
-        finally:
-            os.chdir(original_cwd)  # 恢复原工作目录
-        
+
+            # 读取login.js文件
+            with open(LOGIN_JS_PATH, 'r', encoding='utf-8') as f:
+                js_data = f.read()
+
+            # 编译并执行JS函数加密密码
+            # 设置工作目录为 login.js 所在目录，以便 Node.js 能找到 node_modules
+            login_js_dir = os.path.dirname(LOGIN_JS_PATH)
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(login_js_dir)  # 切换到 login.js 所在目录
+                js_compiled = execjs.compile(js_data)
+                encrypted_password = js_compiled.call('a')
+            finally:
+                os.chdir(original_cwd)  # 恢复原工作目录
+
         # 准备登录请求头
         login_headers = {
             'accept': '*/*',

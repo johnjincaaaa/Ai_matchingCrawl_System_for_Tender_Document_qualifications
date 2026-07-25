@@ -62,13 +62,13 @@ DEFAULT_LIST_PARAMS = {
     "exc_wd": "",
     "fields": "title;infoa",
     "cnum": "077",
-    "sort": '{"ordernum":0,"webdate":0}',
+    "sort": '{webdate:0}',
     "ssort": "title",
     "cl": 500,
     "terminal": "",
     "condition": [
         {
-            "equal": "002001",
+            "equal": "002001001001",
             "fieldName": "categorynum",
             "isLike": "true",
             "likeType": "2"

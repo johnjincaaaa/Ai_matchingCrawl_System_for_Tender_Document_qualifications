@@ -12,7 +12,16 @@ except ModuleNotFoundError:  # pragma: no cover
 load_dotenv()
 
 # 基础配置
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# BASE_DIR 决定数据库 / tender_files / logs 的落盘位置。
+# 打包成 PyInstaller onefile exe 后，sys.frozen=True 且 __file__ 指向临时解压目录
+# (_MEIPASS)，若仍用它做 BASE_DIR，数据会写进临时目录并在退出后被清空。
+# 因此冻结运行时取「exe 所在目录」，让 DB / 下载文件 / 日志 落在 exe 旁边（每个平台
+# exe 各自独立一份，互不干扰）；开发/源码运行时行为不变（用本文件所在目录）。
+import sys as _sys
+if getattr(_sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(_sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 FILES_DIR = os.path.join(BASE_DIR, "tender_files")
 REPORT_DIR = os.path.join(BASE_DIR, "reports")
