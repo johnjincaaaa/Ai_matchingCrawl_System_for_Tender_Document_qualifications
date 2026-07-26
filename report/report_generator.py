@@ -21,6 +21,7 @@ _PLATFORM_DEFAULT_REGION = {
     "义乌市阳光招标采购平台": "义乌市",
     "丽水市阳光采购服务平台": "丽水市",
     "衢州市阳光交易服务平台": "衢州市",
+    "浙江企业采购信息网": "浙江省",
 }
 
 # 报告「来源网站」列使用的平台官网入口。以《浙江省各市招标平台汇总.doc》为准。
@@ -35,6 +36,7 @@ _PLATFORM_OFFICIAL_URLS = {
     "义乌市阳光招标采购平台": "https://www.ywygzc.com/",
     "丽水市阳光采购服务平台": "https://lsygcg.com/jyxx/001001/001001002/001001002001/sec.html",
     "衢州市阳光交易服务平台": "https://qzygjy.com/",
+    "浙江企业采购信息网": "https://b.zhengcaiyun.cn/luban/category?parentId=550016&childrenCode=ZcyAnnouncement",
 }
 
 
@@ -435,6 +437,7 @@ class ReportGenerator:
                     "义乌市阳光招标采购平台": "yiwu",
                     "丽水市阳光采购服务平台": "lishui",
                     "衢州市阳光交易服务平台": "quzhou",
+                    "浙江企业采购信息网": "zcyxxw",
                 }
                 for platform_name, code in platform_map.items():
                     if platform_name in site_name:

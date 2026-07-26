@@ -124,6 +124,19 @@ except ImportError as e:
             pass
         QuZhouTenderSpider = None
 
+try:
+    from .platforms.zcyxxw import ZcyXxwTenderSpider
+except ImportError as e:
+    try:
+        from spider.platforms.zcyxxw import ZcyXxwTenderSpider
+    except ImportError as e2:
+        try:
+            from utils.log import log
+            log.warning(f"导入浙江企业采购信息网爬虫失败（相对导入: {str(e)}, 绝对导入: {str(e2)}），将只显示其他平台")
+        except:
+            pass
+        ZcyXxwTenderSpider = None
+
 __all__ = [
     # 基础类和管理器
     "BaseSpider",
@@ -158,3 +171,6 @@ if LiShuiTenderSpider is not None:
 
 if QuZhouTenderSpider is not None:
     __all__.append("QuZhouTenderSpider")
+
+if ZcyXxwTenderSpider is not None:
+    __all__.append("ZcyXxwTenderSpider")

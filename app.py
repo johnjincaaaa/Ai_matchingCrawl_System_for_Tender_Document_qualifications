@@ -1227,6 +1227,11 @@ def get_available_platforms():
         except Exception as e:
             log.warning(f"导入衢州市爬虫失败: {str(e)}")
 
+        try:
+            from spider.platforms.zcyxxw import ZcyXxwTenderSpider
+        except Exception as e:
+            log.warning(f"导入浙江企业采购信息网爬虫失败: {str(e)}")
+
         platforms = SpiderManager.list_all_spider_info()
         log.debug(f"已注册的爬虫平台: {[p['code'] for p in platforms]}")
         return {info["code"]: info["name"] for info in platforms}
@@ -1251,6 +1256,7 @@ def extract_platform_code(site_name):
         "义乌市阳光招标采购平台": "yiwu",
         "丽水市阳光采购服务平台": "lishui",
         "衢州市阳光交易服务平台": "quzhou",
+        "浙江企业采购信息网": "zcyxxw",
     }
 
     for platform_name, code in platform_map.items():
