@@ -13,12 +13,12 @@ try:
     from ...base_spider import BaseSpider, NO_ATTACHMENT
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG
-    from .request_handler import get_bulletin_list, download_file
+    from .request_handler import get_bulletin_list, get_bulletin_detail, download_file
 except ImportError:
     from spider.base_spider import BaseSpider, NO_ATTACHMENT
     from spider.spider_manager import SpiderManager
     from spider.platforms.shaoxing.config import PLATFORM_CONFIG
-    from spider.platforms.shaoxing.request_handler import get_bulletin_list, download_file
+    from spider.platforms.shaoxing.request_handler import get_bulletin_list, get_bulletin_detail, download_file
 
 
 @SpiderManager.register
@@ -48,6 +48,8 @@ class ShaoXingTenderSpider(BaseSpider):
             log.info(f"时间间隔限制：爬取最近 {self.days_before} 天内的文件")
 
         session = requests.Session()
+        # 国内站点，忽略系统代理，避免本机代理未开时 ProxyError
+        session.trust_env = False
         session.headers.update(self.headers_list)
         session.cookies.update(self.cookies)
 
@@ -193,39 +195,78 @@ class ShaoXingTenderSpider(BaseSpider):
                 "project_id": str(project_id),
                 "region": region,
                 "status": ProjectStatus.DOWNLOADED,
+                # 附件下载走详情接口 GetBulletinContent，需 autoId(GUID)，不落库
+                "_auto_id": item.get("autoId"),
             }
         except Exception as e:
             log.error(f"解析项目数据失败: {str(e)}", exc_info=True)
             return None
 
     def _download_document(self, session, project_id, project_data):
-        """下载附件"""
+        """两步下载附件：详情接口取 fileList → 逐个 fileId 下载。
+
+        无附件（纯正文公告）→ 回填正文并返回 NO_ATTACHMENT，交上层标记排除。
+        """
         try:
+            auto_id = project_data.pop("_auto_id", None)
+            if not auto_id:
+                # autoId 为空多为尚未挂正文/附件的占位公告，非"下载失败"，标记排除不重试
+                log.info(f"项目 {project_id} 无 autoId（无正文/附件的占位公告），标记为已排除")
+                return NO_ATTACHMENT, None
+
+            detail = get_bulletin_detail(
+                session=session,
+                auto_id=auto_id,
+                headers=self.headers_list,
+                cookies=self.cookies,
+            )
+            if detail is None:
+                log.warning(f"项目 {project_id} 详情获取失败（请求失败），将保留重试")
+                return None, None
+
+            file_list = detail.get("fileList") or []
+
+            # 无附件：抓正文回填，交由上层标记排除、不当失败
+            if not file_list:
+                article = detail.get("article")
+                if article:
+                    from spider.base_spider import extract_detail_body_text
+                    body = extract_detail_body_text(article) or article
+                    if body:
+                        project_data["evaluation_content"] = body
+                return NO_ATTACHMENT, None
+
             project_name = project_data.get("project_name", "")[:50]
             safe_name = "".join(c for c in project_name if c.isalnum() or c in (" ", "-", "_")).strip()
             safe_name = safe_name or str(project_id)
             safe_id = str(project_id).replace("/", "_").replace("\\", "_")
-
             file_dir = os.path.join(FILES_DIR, self.PLATFORM_CODE)
             os.makedirs(file_dir, exist_ok=True)
-            file_path = os.path.join(file_dir, f"{self.PLATFORM_CODE}_{safe_id}_{safe_name}.pdf")
 
+            # 下载第一个附件（正文/招标文件），满足解析所需
+            first = file_list[0]
+            file_id = first.get("fileId")
+            orig_name = first.get("fileName") or ""
+            init_ext = (first.get("fileType") or os.path.splitext(orig_name)[1] or ".pdf").lstrip(".").lower()
+            if not file_id:
+                log.warning(f"项目 {project_id} 附件缺少 fileId")
+                return None, None
+
+            file_path = os.path.join(file_dir, f"{self.PLATFORM_CODE}_{safe_id}_{safe_name}.{init_ext}")
             file_ext = download_file(
                 session=session,
-                bulletin_id=project_id,
+                file_id=file_id,
                 save_path=file_path,
                 headers=self.headers_download,
                 cookies=self.cookies,
             )
 
-            # 下载响应判定为无附件（纯正文公告/错误页）→ 交由上层标记排除，不当失败
             if file_ext == NO_ATTACHMENT:
                 return NO_ATTACHMENT, None
 
             if file_ext:
                 if not file_path.endswith(f".{file_ext}"):
                     new_path = file_path.rsplit(".", 1)[0] + f".{file_ext}"
-                    # 目标已存在(重复下载/历史残留)会导致 Windows os.rename 报错，先删除
                     if os.path.exists(new_path):
                         os.remove(new_path)
                     os.rename(file_path, new_path)

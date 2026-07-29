@@ -1,13 +1,16 @@
 """绍兴市阳光采购服务平台请求封装"""
 
+import os
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
 from utils.log import log
 from spider.base_spider import NO_ATTACHMENT
 from spider.platforms.shaoxing.config import (
     API_LIST_URL,
+    API_DETAIL_URL,
     API_DOWNLOAD_URL,
     HEADERS_LIST,
     HEADERS_DOWNLOAD,
@@ -67,17 +70,68 @@ def get_bulletin_list(
     return None
 
 
+def get_bulletin_detail(
+    session: requests.Session,
+    auto_id: str,
+    headers: Optional[Dict] = None,
+    cookies: Optional[Dict] = None,
+    timeout: int = 15,
+    retry_times: int = 3,
+) -> Optional[Dict]:
+    """获取公告详情（正文+附件列表）。
+
+    真实接口：POST /siteapi/api/Portal/GetBulletinContent
+    参数：{"autoID": <autoId GUID>}
+    返回：body.data.article（正文HTML）、body.data.fileList（附件列表）
+    """
+    for attempt in range(retry_times + 1):
+        try:
+            req_headers = headers.copy() if headers else HEADERS_LIST.copy()
+            req_cookies = cookies.copy() if cookies else COOKIES.copy()
+
+            response = session.post(
+                API_DETAIL_URL,
+                headers=req_headers,
+                cookies=req_cookies,
+                json={"autoID": auto_id},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return (data.get("body") or {}).get("data")
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt < retry_times:
+                wait = 2 * (attempt + 1)
+                log.warning(f"绍兴详情请求超时/连接失败（第{attempt+1}次），{wait}秒后重试")
+                time.sleep(wait)
+            else:
+                log.error("绍兴详情请求失败，已达最大重试次数")
+                return None
+        except Exception as e:
+            if attempt < retry_times:
+                wait = 2 * (attempt + 1)
+                log.warning(f"绍兴详情请求异常（第{attempt+1}次），{wait}秒后重试: {str(e)}")
+                time.sleep(wait)
+            else:
+                log.error(f"绍兴详情请求异常，已达最大重试次数: {str(e)}")
+                return None
+    return None
+
+
 def download_file(
     session: requests.Session,
-    bulletin_id: str,
+    file_id: str,
     save_path: str,
     headers: Optional[Dict] = None,
     cookies: Optional[Dict] = None,
     timeout: int = 120,
     retry_times: int = 3,
 ) -> Optional[str]:
-    """下载公告附件，返回文件扩展名"""
-    download_url = f"{API_DOWNLOAD_URL}/{bulletin_id}"
+    """下载公告附件，返回文件扩展名。
+
+    file_id 取自详情接口 fileList 的 fileId（非列表的 bulletinId）。
+    """
+    download_url = f"{API_DOWNLOAD_URL}/{file_id}"
 
     for attempt in range(retry_times + 1):
         try:

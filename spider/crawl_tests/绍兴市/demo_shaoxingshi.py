@@ -8,7 +8,7 @@ def get_url(page):
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "Content-Type": "application/json",
-        "Origin": "https://ygcg.sxjypt.com",
+        "Origin": "https://ygcg.snixjypt.com",
         "Pragma": "no-cache",
         "Referer": "https://ygcg.sxjypt.com/home",
         "Sec-Fetch-Dest": "empty",

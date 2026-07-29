@@ -5,6 +5,7 @@ PLATFORM_CODE = "shaoxing"
 
 BASE_URL = "https://ygcg.sxjypt.com"
 API_LIST_URL = f"{BASE_URL}/siteapi/api/Portal/GetBulletinList"
+API_DETAIL_URL = f"{BASE_URL}/siteapi/api/Portal/GetBulletinContent"
 API_DOWNLOAD_URL = f"{BASE_URL}/fileserver/api/download"
 
 # 列表请求头
@@ -60,6 +61,7 @@ PLATFORM_CONFIG = {
     "code": PLATFORM_CODE,
     "base_url": BASE_URL,
     "api_list_url": API_LIST_URL,
+    "api_detail_url": API_DETAIL_URL,
     "api_download_url": API_DOWNLOAD_URL,
     "headers_list": HEADERS_LIST,
     "headers_download": HEADERS_DOWNLOAD,
