@@ -48,15 +48,19 @@ except Exception as e:
 from ai.analysis_worker import analyze_one_project as _analyze_one_project
 
 
-def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, enabled_platforms=None):
+def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, enabled_platforms=None,
+                         gov_cities=None, ent_cities=None):
     """
     命令行版本的全流程执行函数（不依赖Streamlit）
-    
+
     Args:
         daily_limit: 每日爬取限制，None时使用config中的默认值
         days_before: 时间间隔，爬取指定天数之前的文件（None或0表示只爬取当日文件）
         model_type: AI模型类型（'local' 或 'cloud'），None时使用config中的默认值
-    
+        enabled_platforms: 启用的平台列表（None=全部）
+        gov_cities: 政府采购地级市筛选（None/空列表=不限，仅用于政采云zhejiang）
+        ent_cities: 国企采购地级市筛选（None/空列表=不限，用于zcyxxw等企业平台）
+
     Returns:
         bool: 是否成功完成
     """
@@ -108,9 +112,11 @@ def run_full_process_cli(daily_limit=None, days_before=None, model_type=None, en
             # 正常模式：执行爬虫
             try:
                 all_projects = SpiderManager.run_all_spiders(
-                    days_before=days_before, 
+                    days_before=days_before,
                     enabled_platforms=enabled_platforms,
-                    total_limit=daily_limit
+                    total_limit=daily_limit,
+                    gov_cities=gov_cities,
+                    ent_cities=ent_cities,
                 )
                 logger.info(f"✅ 爬虫完成，共获取 {len(all_projects)} 个项目")
             except Exception as e:
@@ -276,18 +282,22 @@ def main():
                        help='AI模型类型（local或cloud），默认使用config中的配置')
     parser.add_argument('--enabled-platforms', type=str, default=None,
                        help='启用的平台列表，逗号分隔（例如：ningbo,hangzhou），默认爬取所有平台')
+    parser.add_argument('--gov-cities', type=str, default=None,
+                       help='政府采购地级市筛选，逗号分隔（例如：杭州市,宁波市），默认不筛选')
+    parser.add_argument('--ent-cities', type=str, default=None,
+                       help='国企采购地级市筛选，逗号分隔（例如：杭州市,宁波市），默认不筛选')
     parser.add_argument('--test-mode', action='store_true',
                        help='测试模式：只爬取2个文件')
-    
+
     args = parser.parse_args()
-    
+
     logger.info("🚀 开始自动运行全流程（命令行版本）")
-    
+
     # 测试模式：自动设置爬取数量为2
     if args.test_mode:
         args.daily_limit = 2
         logger.info("⚠️ 测试模式：限制爬取数量为2个文件")
-    
+
     if args.daily_limit:
         logger.info(f"📊 爬取数量限制：{args.daily_limit}")
     else:
@@ -303,16 +313,32 @@ def main():
         logger.info(f"🌐 启用的平台：{', '.join(enabled_platforms)}")
     else:
         logger.info(f"🌐 启用的平台：所有平台")
-    
+    if args.gov_cities:
+        gov_cities = [c.strip() for c in args.gov_cities.split(',')]
+        logger.info(f"🏙️ 政府采购地级市筛选：{', '.join(gov_cities)}")
+    else:
+        gov_cities = None
+        logger.info(f"🏙️ 政府采购地级市筛选：不限")
+    if args.ent_cities:
+        ent_cities = [c.strip() for c in args.ent_cities.split(',')]
+        logger.info(f"🏙️ 国企采购地级市筛选：{', '.join(ent_cities)}")
+    else:
+        ent_cities = None
+        logger.info(f"🏙️ 国企采购地级市筛选：不限")
+
     try:
         # 执行全流程（使用命令行参数）
         days_before = args.days_before if args.days_before > 0 else None
         enabled_platforms = [p.strip() for p in args.enabled_platforms.split(',')] if args.enabled_platforms else None
+        gov_cities = [c.strip() for c in args.gov_cities.split(',')] if args.gov_cities else None
+        ent_cities = [c.strip() for c in args.ent_cities.split(',')] if args.ent_cities else None
         result = run_full_process_cli(
             daily_limit=args.daily_limit,
             days_before=days_before,
             model_type=args.model_type,
-            enabled_platforms=enabled_platforms
+            enabled_platforms=enabled_platforms,
+            gov_cities=gov_cities,
+            ent_cities=ent_cities,
         )
         
         if result:

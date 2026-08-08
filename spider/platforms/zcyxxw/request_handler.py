@@ -1,212 +1,202 @@
 """浙江企业采购信息网（b.zhengcaiyun.cn）请求封装
 
-站点位于阿里云 WAF（acw_sc__v2 JS 挑战）之后：
-- 首次请求接口返回一个 HTML 挑战页（内含 <textarea id="renderData"> 与两段 <script>）；
-- 需执行页面里的混淆 JS，它会调用 setCookie("acw_sc__v2", <value>) 得到 cookie；
-- 带上该 cookie 重发同一请求即可拿到真实 JSON。
 
-本模块用本机 Node 执行挑战页 JS（提供最小 DOM 桩捕获 setCookie 的值）解出 cookie，
-运行时其余部分仍是纯 requests。solve 结果缓存在 session.cookies，仅在再次被挑战时重算。
+站点接口位于阿里云 WAF 之后，且每个请求都需前端注入 X-Sign 签名（MD5+隐藏密钥，
+藏在深度混淆的 WAF SDK 里）。缺签名的纯 requests 请求会被直接判为异常流量、弹出
+阿里云滑块验证，无法绕过。
+
+【方案：浏览器驱动】用 DrissionPage 无头 Chromium 打开站点，让页面自带的签名逻辑
+和 WAF 校验全部由真实浏览器完成——列表/详情接口通过页面内的 axios 调用取回 JSON。
+附件是 OSS 直链（无鉴权），仍用 requests 直接下载（见 download_file）。
+
+浏览器实例封装在 ZcyBrowser，供 spider 在一次 run() 内复用、结束时 close()。
 """
 
-import json
 import os
 import re
-import subprocess
-import tempfile
+import json
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import requests
 from utils.log import log
 from spider.platforms.zcyxxw.config import (
     BASE_URL,
-    API_LIST_URL,
-    API_DETAIL_URL,
     LIST_CATEGORY_CODE,
     DETAIL_PARENT_ID,
-    HEADERS_LIST,
-    HEADERS_DETAIL,
     HEADERS_DOWNLOAD,
-    COOKIES,
-    USER_AGENT,
 )
 
 # 复用全平台统一的“无附件”哨兵
 from spider.base_spider import NO_ATTACHMENT
 
-# 挑战页特征：命中即说明被 WAF 拦截，需要解 acw_sc__v2
-_CHALLENGE_MARKERS = ("renderData", "acw_sc__v2", "aliyunwaf")
+# SPA 入口页：加载后页面内 axios 已初始化并带 X-Sign 签名拦截器
+_ENTRY_URL = f"{BASE_URL}/luban/category?parentId={DETAIL_PARENT_ID}&childrenCode=ZcyAnnouncement"
 
 
-def _looks_like_challenge(text: str) -> bool:
-    if not text:
-        return False
-    head = text[:2000]
-    return ("arg1=" in head or "renderData" in head) and "<textarea" in head
+class ZcyBrowser:
+    """DrissionPage 无头浏览器封装：通过页面内已签名的 axios 调用站点接口。
 
-
-def solve_waf_cookie(challenge_html: str, timeout: int = 20) -> Optional[str]:
-    """执行挑战页里的混淆 JS，返回 acw_sc__v2 cookie 值（失败返回 None）。
-
-    做法：抽出 <textarea id="renderData"> 内容与两段 <script>，在 Node 里用最小 DOM
-    桩运行；桩把 document.cookie 的写入捕获到变量，脚本调用 setCookie 后即可取到完整
-    cookie（值含连字符，形如 1234abcd-长串16进制）。location.reload 被置为 noop。
+    用法：
+        br = ZcyBrowser(); br.open()
+        data = br.api_post('/portal/category', {...})
+        br.close()
     """
-    try:
-        m_render = re.search(
-            r'<textarea id="renderData"[^>]*>(.*?)</textarea>', challenge_html, re.S
+
+    def __init__(self, headless: bool = False, load_wait: float = 4.0):
+        self.headless = headless
+        self.load_wait = load_wait
+        self.page = None
+
+    def open(self):
+        from DrissionPage import ChromiumPage, ChromiumOptions
+        co = ChromiumOptions().headless(self.headless)
+        for arg in ("--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"):
+            co.set_argument(arg)
+        self.page = ChromiumPage(co)
+        self.page.get(_ENTRY_URL)
+        time.sleep(self.load_wait)  # 等 SPA 加载 + 签名拦截器就绪
+        log.info("zcyxxw 浏览器已就绪")
+        return self
+
+    def _call_once(self, axios_expr: str, timeout: int = 25):
+        """执行一次 axios 调用。返回 (status, value)：
+        status: 'ok' 数据可用 / 'challenge' 命中WAF滑块 / 'fail' 其它失败 / 'timeout'。
+        """
+        self.page.run_js(
+            "window.__zcy=null;(async()=>{try{const v=await (%s);"
+            "window.__zcy=JSON.stringify({ok:1,v:v});}catch(e){"
+            "window.__zcy=JSON.stringify({ok:0,e:String(e)});}})();" % axios_expr
         )
-        scripts = re.findall(r'<script[^>]*>(.*?)</script>', challenge_html, re.S)
-        if not m_render or len(scripts) < 2:
-            log.warning("zcyxxw WAF：挑战页结构不符合预期，无法解算")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(0.5)
+            r = self.page.run_js("return window.__zcy;")
+            if r:
+                try:
+                    obj = json.loads(r)
+                except Exception:
+                    return "fail", None
+                if obj.get("ok"):
+                    return "ok", obj.get("v")
+                err = str(obj.get("e") or "")
+                # axios 收到 WAF 挑战页(HTML)时通常报解析错/状态异常
+                return "fail", err
+        return "timeout", None
+
+    def _call(self, axios_expr: str, timeout: int = 25) -> Optional[Dict]:
+        """执行 axios 调用；命中滑块则自动滑过后重试。"""
+        if not self.page:
+            raise RuntimeError("ZcyBrowser 未 open()")
+        for attempt in range(3):
+            status, val = self._call_once(axios_expr, timeout=timeout)
+            if status == "ok":
+                return val
+            # 失败/超时：可能是命中滑块。检测并尝试自动滑过。
+            if self._is_slider_present() or status in ("fail", "timeout"):
+                if self._solve_slider():
+                    log.info("zcyxxw 滑块验证已通过，重试接口调用")
+                    continue
+            if status == "fail":
+                log.warning(f"zcyxxw 页面接口调用失败：{str(val)[:150]}")
+                return None
+            log.warning("zcyxxw 页面接口调用超时")
             return None
-        render = m_render.group(1)
-        js0, js1 = scripts[0], scripts[1]
+        return None
 
-        harness = (
-            'var __cookie="";\n'
-            'var navigator={userAgent:%s,platform:"Win32"};\n'
-            'var location={href:"https://b.zhengcaiyun.cn/portal/category",'
-            'protocol:"https:",host:"b.zhengcaiyun.cn",pathname:"/portal/category",'
-            'search:"",hash:"",reload:function(){},replace:function(){},assign:function(){}};\n'
-            'var document={getElementById:function(id){return {innerHTML: %s};},'
-            'set cookie(v){__cookie=v;},get cookie(){return __cookie;},'
-            'referrer:"",location:location,'
-            'createElement:function(){return {style:{},setAttribute:function(){},appendChild:function(){}};},'
-            'head:{appendChild:function(){}},body:{appendChild:function(){}},documentElement:{}};\n'
-            'var window=this;window.document=document;window.location=location;window.navigator=navigator;\n'
-            'try{%s}catch(e){}\n'
-            'try{%s}catch(e){}\n'
-            'var m=/acw_sc__v2=([0-9a-fA-F-]+)/.exec(__cookie);\n'
-            'console.log("ACW="+(m?m[1]:"NONE"));\n'
-        ) % (json.dumps(USER_AGENT), json.dumps(render), js0, js1)
+    def _is_slider_present(self) -> bool:
+        try:
+            return bool(self.page.run_js(
+                "return !!document.querySelector('#aliyunCaptcha-sliding-slider');"
+            ))
+        except Exception:
+            return False
 
-        # 中文路径下 node 直接跑文件名会 MODULE_NOT_FOUND，改用 stdin 传入
-        proc = subprocess.run(
-            ["node"],
-            input=harness,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+    def _solve_slider(self, rounds: int = 4) -> bool:
+        """检测并拖动阿里云滑块。成功返回 True。
+
+        接口 XHR 被 WAF 拦截时，SPA 会就地渲染滑块（页面 URL 不变），
+        因此无需导航，直接定位 #aliyunCaptcha-sliding-slider 拖动即可。
+
+        经实测：一次性 hold→right(大距离)→release 能过，分步缓动轨迹反被风控判失败。
+        move_distance 用远超轨道宽的固定值（900）一口气拉到底即可。
+        """
+        if not self._is_slider_present():
+            return False  # 没有滑块，交由上层按普通失败处理
+        for rnd in range(rounds):
+            if not self._is_slider_present():
+                return True  # 已放行
+            try:
+                time.sleep(0.6)  # 等滑块渲染稳定，避免 element has no location
+                slider = self.page.ele("#aliyunCaptcha-sliding-slider")
+                # 一次性按住→右移→松开（距离取 900，远超轨道宽，直接拉到底）
+                self.page.actions.hold(slider).right(900).release()
+                time.sleep(2.0)
+                if not self._is_slider_present():
+                    return True
+                log.warning(f"zcyxxw 滑块第{rnd+1}次未通过，重试")
+            except Exception as e:
+                log.warning(f"zcyxxw 滑块拖动异常：{str(e)[:120]}")
+                time.sleep(1.0)
+        return False
+
+    def api_post(self, path: str, body: Dict, timeout: int = 25) -> Optional[Dict]:
+        return self._call(
+            "window.axios.post(%s,%s)" % (json.dumps(path), json.dumps(body)),
             timeout=timeout,
         )
-        m = re.search(r"ACW=([0-9a-fA-F-]+)", proc.stdout or "")
-        if m:
-            return m.group(1)
-        log.warning(f"zcyxxw WAF：Node 解算未产出 cookie（stderr: {(proc.stderr or '')[:200]}）")
-        return None
-    except FileNotFoundError:
-        log.error("zcyxxw WAF：未找到 node，可执行文件缺失，无法解算 acw_sc__v2")
-        return None
-    except Exception as e:
-        log.warning(f"zcyxxw WAF：解算异常：{str(e)}")
-        return None
 
+    def api_get(self, path: str, params: Dict, timeout: int = 25) -> Optional[Dict]:
+        return self._call(
+            "window.axios.get(%s,{params:%s})" % (json.dumps(path), json.dumps(params)),
+            timeout=timeout,
+        )
 
-def _request_with_waf(
-    session: requests.Session,
-    method: str,
-    url: str,
-    *,
-    headers: Dict,
-    json_body: Optional[Dict] = None,
-    params: Optional[Dict] = None,
-    timeout: int = 20,
-    retry_times: int = 3,
-) -> Optional[requests.Response]:
-    """带 WAF 自动解算的请求：命中挑战页则解 cookie 后重发。"""
-    for attempt in range(retry_times + 1):
+    def close(self):
         try:
-            if method == "POST":
-                resp = session.post(url, headers=headers, json=json_body, timeout=timeout)
-            else:
-                resp = session.get(url, headers=headers, params=params, timeout=timeout)
-
-            # 命中 WAF 挑战：解 cookie 后立即重发一次
-            if _looks_like_challenge(resp.text):
-                acw = solve_waf_cookie(resp.text)
-                if not acw:
-                    log.warning(f"zcyxxw：WAF 挑战解算失败（第{attempt+1}次）")
-                    time.sleep(2)
-                    continue
-                session.cookies.set("acw_sc__v2", acw, domain="b.zhengcaiyun.cn")
-                if method == "POST":
-                    resp = session.post(url, headers=headers, json=json_body, timeout=timeout)
-                else:
-                    resp = session.get(url, headers=headers, params=params, timeout=timeout)
-
-            resp.raise_for_status()
-            return resp
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            if attempt < retry_times:
-                wait = 2 * (attempt + 1)
-                log.warning(f"zcyxxw 请求超时/连接失败（第{attempt+1}次），{wait}秒后重试")
-                time.sleep(wait)
-            else:
-                log.error("zcyxxw 请求失败，已达最大重试次数")
-                return None
-        except Exception as e:
-            if attempt < retry_times:
-                wait = 2 * (attempt + 1)
-                log.warning(f"zcyxxw 请求异常（第{attempt+1}次），{wait}秒后重试：{str(e)}")
-                time.sleep(wait)
-            else:
-                log.error(f"zcyxxw 请求异常，已达最大重试次数：{str(e)}")
-                return None
-    return None
+            if self.page:
+                self.page.quit()
+        except Exception:
+            pass
+        self.page = None
 
 
 def get_project_list(
-    session: requests.Session,
+    browser: ZcyBrowser,
     page: int = 1,
     page_size: int = 15,
-    headers: Optional[Dict] = None,
-    timeout: int = 20,
-    retry_times: int = 3,
+    **_ignored,
 ) -> Optional[Dict]:
     """获取「公开招标公告」列表。返回 API JSON（含 result.data.data[]），失败返回 None。"""
-    req_headers = headers.copy() if headers else HEADERS_LIST.copy()
-    payload = {
+    body = {
         "pageNo": page,
         "pageSize": page_size,
         "categoryCode": LIST_CATEGORY_CODE,
         "_t": int(time.time() * 1000),
     }
-    resp = _request_with_waf(
-        session, "POST", API_LIST_URL,
-        headers=req_headers, json_body=payload, timeout=timeout, retry_times=retry_times,
-    )
-    if not resp:
-        return None
     try:
-        return resp.json()
+        return browser.api_post("/portal/category", body)
     except Exception as e:
-        log.error(f"zcyxxw 列表响应非 JSON：{str(e)}；前200字符：{resp.text[:200]}")
+        log.error(f"zcyxxw 列表请求异常：{str(e)}")
         return None
 
 
 def get_doc_detail(
-    session: requests.Session,
+    browser: ZcyBrowser,
     article_id: str,
-    headers: Optional[Dict] = None,
-    timeout: int = 20,
-    retry_times: int = 3,
+    **_ignored,
 ) -> Optional[Dict]:
     """获取详情页数据（result.data，含 content 正文与 attachmentVO 附件）。失败返回 None。"""
-    req_headers = headers.copy() if headers else HEADERS_DETAIL.copy()
-    params = {"articleId": article_id, "parentId": DETAIL_PARENT_ID, "timestamp": int(time.time() * 1000)}
-    resp = _request_with_waf(
-        session, "GET", API_DETAIL_URL,
-        headers=req_headers, params=params, timeout=timeout, retry_times=retry_times,
-    )
-    if not resp:
-        return None
+    params = {
+        "articleId": article_id,
+        "parentId": DETAIL_PARENT_ID,
+        "timestamp": int(time.time() * 1000),
+    }
     try:
-        data = resp.json()
-        return (data or {}).get("result", {}).get("data")
+        data = browser.api_get("/portal/detail", params)
+        return (data or {}).get("result", {}).get("data") if data else None
     except Exception as e:
-        log.error(f"zcyxxw 详情响应非 JSON：{str(e)}；前200字符：{resp.text[:200]}")
+        log.error(f"zcyxxw 详情请求异常：{str(e)}")
         return None
 
 

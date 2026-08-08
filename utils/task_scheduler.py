@@ -109,18 +109,22 @@ class WindowsTaskScheduler:
         except Exception as e:
             return False, str(e)
     
-    def create_task(self, task_id: str, schedule_time: str, daily_limit: int = 300, 
-                   days_before: int = None, enabled: bool = True, enabled_platforms=None) -> Tuple[bool, str]:
+    def create_task(self, task_id: str, schedule_time: str, daily_limit: int = 300,
+                   days_before: int = None, enabled: bool = True, enabled_platforms=None,
+                   gov_cities=None, ent_cities=None) -> Tuple[bool, str]:
         """
         创建定时任务
-        
+
         Args:
             task_id: 任务ID（唯一标识）
             schedule_time: 执行时间，格式 "HH:MM" (24小时制)
             daily_limit: 每日爬取数量限制，默认300
             days_before: 时间间隔，爬取指定天数之前的文件（None或0表示只爬取当日文件）
             enabled: 是否启用
-        
+            enabled_platforms: 启用的平台列表
+            gov_cities: 政府采购地级市筛选
+            ent_cities: 国企采购地级市筛选
+
         Returns:
             (成功标志, 消息)
         """
@@ -152,11 +156,18 @@ class WindowsTaskScheduler:
             platforms_str = ",".join(enabled_platforms)
             platforms_arg = f" --enabled-platforms {platforms_str}"
 
+        # 地级市参数
+        cities_arg = ""
+        if gov_cities:
+            cities_arg += f" --gov-cities {','.join(gov_cities)}"
+        if ent_cities:
+            cities_arg += f" --ent-cities {','.join(ent_cities)}"
+
         try:
             with open(wrapper_cmd, "w", encoding="utf-8") as f:
                 f.write("@echo off\n")
                 f.write(f'cd /d "{self.base_dir}"\n')
-                f.write(f'"{self.python_exe}" "{self.script_path}" --daily-limit {daily_limit}{days_before_arg}{platforms_arg}\n')
+                f.write(f'"{self.python_exe}" "{self.script_path}" --daily-limit {daily_limit}{days_before_arg}{platforms_arg}{cities_arg}\n')
         except Exception as e:
             return False, f"创建任务执行脚本失败: {e}"
         
@@ -192,6 +203,8 @@ class WindowsTaskScheduler:
                 "days_before": days_before,
                 "enabled": enabled,
                 "enabled_platforms": enabled_platforms,
+                "gov_cities": gov_cities,
+                "ent_cities": ent_cities,
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "wrapper_cmd": wrapper_cmd
             }
@@ -335,28 +348,31 @@ class WindowsTaskScheduler:
         else:
             return False, f"启动任务失败：{output}"
     
-    def test_task(self, daily_limit: int = 300, days_before: int = None, enabled_platforms=None) -> Tuple[bool, str]:
+    def test_task(self, daily_limit: int = 300, days_before: int = None, enabled_platforms=None,
+                  gov_cities=None, ent_cities=None) -> Tuple[bool, str]:
         """测试执行任务（立即运行一次）"""
         try:
             import sys
             script_path = os.path.join(self.base_dir, "auto_run_full_process.py")
-            
+
             # 修改auto_run_full_process.py以支持命令行参数
             # 这里直接调用函数
             sys.path.insert(0, self.base_dir)
             from auto_run_full_process import run_full_process_cli
-            
+
             # 在后台线程中执行
             import threading
             def run_task():
                 try:
-                    run_full_process_cli(daily_limit=daily_limit, days_before=days_before, enabled_platforms=enabled_platforms)
+                    run_full_process_cli(daily_limit=daily_limit, days_before=days_before,
+                                         enabled_platforms=enabled_platforms,
+                                         gov_cities=gov_cities, ent_cities=ent_cities)
                 except Exception as e:
                     log.error(f"测试任务执行失败: {e}")
-            
+
             thread = threading.Thread(target=run_task, daemon=True)
             thread.start()
-            
+
             return True, "测试任务已启动，请查看日志了解执行情况"
         except Exception as e:
             return False, f"启动测试任务失败：{str(e)}"

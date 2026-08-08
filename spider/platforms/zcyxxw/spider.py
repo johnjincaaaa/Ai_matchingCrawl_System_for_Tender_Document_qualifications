@@ -7,7 +7,6 @@ import os
 import time
 from datetime import datetime, timedelta
 
-import requests
 from utils.log import log
 from utils.db import save_project, ProjectStatus
 from config import FILES_DIR
@@ -17,7 +16,7 @@ try:
     from ...spider_manager import SpiderManager
     from .config import PLATFORM_CONFIG, BASE_URL, DETAIL_PARENT_ID
     from .request_handler import (
-        get_project_list, get_doc_detail, parse_attachments,
+        ZcyBrowser, get_project_list, get_doc_detail, parse_attachments,
         download_file, extract_body_text, NO_ATTACHMENT,
     )
 except ImportError:
@@ -25,7 +24,7 @@ except ImportError:
     from spider.spider_manager import SpiderManager
     from spider.platforms.zcyxxw.config import PLATFORM_CONFIG, BASE_URL, DETAIL_PARENT_ID
     from spider.platforms.zcyxxw.request_handler import (
-        get_project_list, get_doc_detail, parse_attachments,
+        ZcyBrowser, get_project_list, get_doc_detail, parse_attachments,
         download_file, extract_body_text, NO_ATTACHMENT,
     )
 
@@ -37,8 +36,9 @@ class ZcyXxwTenderSpider(BaseSpider):
     PLATFORM_NAME = PLATFORM_CONFIG["name"]
     PLATFORM_CODE = PLATFORM_CONFIG["code"]
 
-    def __init__(self, daily_limit=None, days_before=None, **kwargs):
+    def __init__(self, daily_limit=None, days_before=None, gov_cities=None, **kwargs):
         super().__init__(daily_limit=daily_limit, days_before=days_before, **kwargs)
+        self.gov_cities = gov_cities
         self.base_url = PLATFORM_CONFIG["base_url"]
         self.headers_list = PLATFORM_CONFIG["headers_list"]
         self.headers_detail = PLATFORM_CONFIG["headers_detail"]
@@ -51,12 +51,17 @@ class ZcyXxwTenderSpider(BaseSpider):
         log.info(f"开始爬取{self.PLATFORM_NAME}，总配额: {self.daily_limit}")
         if self.days_before is not None:
             log.info(f"时间间隔限制：爬取最近 {self.days_before} 天内的文件")
+        if self.gov_cities:
+            log.info(f"地级市筛选：仅采集 {', '.join(self.gov_cities)}")
 
-        session = requests.Session()
-        # 政采云为国内站点，不应走系统/科学上网代理：忽略环境里的 HTTP(S)_PROXY，
-        # 否则本机代理（如 127.0.0.1:7897）未开启时会全量 ProxyError 连不上。
-        session.trust_env = False
-        session.headers.update({"User-Agent": PLATFORM_CONFIG["headers_list"]["User-Agent"]})
+        # 列表/详情走无头浏览器（页面自带 X-Sign 签名并通过 WAF）；附件走 requests 直下 OSS。
+        try:
+            browser = ZcyBrowser().open()
+        except Exception as e:
+            log.error(f"{self.PLATFORM_NAME} 浏览器启动失败，无法爬取：{str(e)}", exc_info=True)
+            self.db.close()
+            self.crawled_count = 0
+            return []
 
         projects = []
         total_count = 0
@@ -84,10 +89,9 @@ class ZcyXxwTenderSpider(BaseSpider):
 
             log.debug(f"正在请求第{page_no}页数据")
             result = get_project_list(
-                session=session,
+                browser=browser,
                 page=page_no,
                 page_size=self.page_size,
-                headers=self.headers_list,
             )
             if not result:
                 log.warning(f"第{page_no}页请求失败或返回为空")
@@ -122,7 +126,7 @@ class ZcyXxwTenderSpider(BaseSpider):
                         continue
                     processed_ids.add(project_id)
 
-                    file_path, file_format = self._download_document(session, project_id, project_data)
+                    file_path, file_format = self._download_document(browser, project_id, project_data)
                     if file_path == NO_ATTACHMENT:
                         project_data["status"] = ProjectStatus.EXCLUDED
                         project_data["error_msg"] = "详情页无附件（纯正文公告/公示），无标书文件可下载"
@@ -146,7 +150,7 @@ class ZcyXxwTenderSpider(BaseSpider):
 
             page_no += 1
 
-        session.close()
+        browser.close()
         self.db.close()
         self.crawled_count = total_count
         log.info(f"{self.PLATFORM_NAME}爬取完成，总获取: {total_count}个项目")
@@ -186,6 +190,12 @@ class ZcyXxwTenderSpider(BaseSpider):
                     return "TOO_OLD"
 
             region = item.get("districtName") or "浙江省"
+
+            # 地级市过滤：若设定了城市筛选，只保留 districtName 匹配的项目
+            if self.gov_cities:
+                if not any(city in (region or "") for city in self.gov_cities):
+                    return None
+
             # 详情页入口 URL（浏览器可访问，供报告「来源网站」兜底/追溯）
             from urllib.parse import quote
             detail_url = (
@@ -209,11 +219,11 @@ class ZcyXxwTenderSpider(BaseSpider):
             log.error(f"解析项目数据失败: {str(e)}", exc_info=True)
             return None
 
-    def _download_document(self, session, project_id, project_data):
+    def _download_document(self, browser, project_id, project_data):
         """获取详情、下载附件。返回 (file_path, file_ext)；无附件返回 (NO_ATTACHMENT, None)。"""
         try:
             article_id = project_data.pop("_article_id", None) or project_id
-            detail_data = get_doc_detail(session=session, article_id=article_id, headers=self.headers_detail)
+            detail_data = get_doc_detail(browser=browser, article_id=article_id)
             if not detail_data:
                 log.warning(f"项目 {project_id} 详情获取失败，跳过下载")
                 return None, None

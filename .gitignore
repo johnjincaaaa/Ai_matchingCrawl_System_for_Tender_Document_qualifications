@@ -8,6 +8,8 @@
 /reports/
 /tender_files/
 /.env
+/_review_tmp
+/build_spiders_work
 
 # Python 编译缓存
 __pycache__/

@@ -675,11 +675,15 @@ def ingest_downloaded_files(
     daily_limit: Optional[int] = None,
     days_before: Optional[int] = None,
     save_dir: Optional[str] = None,
+    gov_cities: Optional[List[str]] = None,
 ) -> List[TenderProject]:
     """解析 total_下载记录.csv，按数量/时间范围将 doc/docx/pdf 标书去重入库。
 
     仅读取记录表，不触发任何 exe（exe 下载由独立脚本 run_zcy_download.py 每日定时执行）。
     文件已在 save_dir 下，无需拷贝。
+
+    Args:
+        gov_cities: 政府采购地级市筛选（None/空列表=不限；列表=["杭州市","宁波市"]=仅入库指定城市）
     """
     save_dir = save_dir or ZCY_CONFIG["save_dir"]
     if not os.path.isdir(save_dir):
@@ -734,6 +738,10 @@ def ingest_downloaded_files(
 
         district_code = (rec.get("district_code") or "").strip()
         region = _region_from_code(district_code)
+
+        # 地级市筛选：仅入库用户勾选的城市
+        if gov_cities and region not in gov_cities:
+            continue
 
         download_url = (rec.get("download_url") or "").strip()
         project_data = {
@@ -797,17 +805,23 @@ def run_zcy_external_spider(
     daily_limit: Optional[int] = None,
     days_before: Optional[int] = None,
     skip_gui: Optional[bool] = None,  # 已废弃，保留仅为向后兼容签名
+    gov_cities: Optional[List[str]] = None,
 ) -> List[TenderProject]:
     """【系统入库入口，供流程执行/定时爬取调用】
     只读 total_下载记录.csv，按 daily_limit（数量）+ days_before（时间范围）去重入库。
     完全不触发 exe —— exe 下载由 run_zcy_download_pipeline() 独立每日定时执行。
+
+    Args:
+        gov_cities: 政府采购地级市筛选（None/空列表=不限）
     """
     save_dir = ZCY_CONFIG["save_dir"]
     log.info("=" * 50)
     log.info("政采云：读取累积记录表入库（不触发 exe）")
     log.info(f"保存目录: {save_dir} | 数量上限: {daily_limit} | 时间范围: {days_before} 天内")
+    if gov_cities:
+        log.info(f"地级市筛选: {', '.join(gov_cities)}")
     log.info("=" * 50)
 
     return ingest_downloaded_files(
-        db, daily_limit=daily_limit, days_before=days_before, save_dir=save_dir
+        db, daily_limit=daily_limit, days_before=days_before, save_dir=save_dir, gov_cities=gov_cities
     )

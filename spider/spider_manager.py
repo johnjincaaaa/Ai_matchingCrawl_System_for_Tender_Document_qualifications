@@ -180,15 +180,18 @@ class SpiderManager:
             raise
     
     @classmethod
-    def run_all_spiders(cls, days_before=None, enabled_platforms=None, total_limit=None) -> List:
+    def run_all_spiders(cls, days_before=None, enabled_platforms=None, total_limit=None,
+                        gov_cities=None, ent_cities=None) -> List:
         """
         运行所有爬虫或指定平台爬虫
-        
+
         Args:
             days_before: 时间间隔，爬取最近N天内的文件（None表示只爬取当日）
             enabled_platforms: 启用的平台列表（None表示全部启用）
             total_limit: 总爬取数量限制（None表示不限制）
-            
+            gov_cities: 政府采购地级市筛选（None/空=不限，仅用于政采云zhejiang平台）
+            ent_cities: 国企采购地级市筛选（None/空=不限，用于zcyxxw等企业平台）
+
         Returns:
             List: 所有爬虫返回的项目列表（合并后）
         """
@@ -230,7 +233,13 @@ class SpiderManager:
                     remaining_limit = total_limit - len(all_projects)
                     log.info(f"当前平台剩余可爬取数量: {remaining_limit}")
                 
-                spider = cls.create_spider(platform_code, days_before=days_before, daily_limit=remaining_limit)
+                # 政府采购→gov_cities，国企采购→ent_cities（zhejiang 是唯一政府平台）
+                extra_kwargs = {}
+                if platform_code == "zhejiang" and gov_cities:
+                    extra_kwargs["gov_cities"] = gov_cities
+                elif platform_code != "zhejiang" and ent_cities:
+                    extra_kwargs["gov_cities"] = ent_cities
+                spider = cls.create_spider(platform_code, days_before=days_before, daily_limit=remaining_limit, **extra_kwargs)
                 projects = spider.run()
                 
                 # 如果有总限制，只添加剩余数量的项目

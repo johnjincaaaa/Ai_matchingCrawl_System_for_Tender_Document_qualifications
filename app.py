@@ -1181,6 +1181,29 @@ def _dict_to_project(project_dict):
     return SimpleNamespace(**project_dict)
 
 
+# ====================== 平台分类元数据 ======================
+# category: "government"（政府采购-政采云）/ "enterprise"（国企采购-各地市独立平台+企业采购信息网）
+# city: 该平台对应的地级市；None 表示全省覆盖（zhejiang 和 zcyxxw）
+PLATFORM_META = {
+    # 政府采购（仅政采云，全省覆盖，通过 gov_cities 做地级市过滤）
+    "zhejiang":  {"name": "浙江省政府采购网（政采云）", "category": "government", "city": None},
+    # 国企采购（各地市独立平台 + 浙江企业采购信息网）
+    "hangzhou":  {"name": "杭州市公共资源交易网",       "category": "enterprise", "city": "杭州市"},
+    "ningbo":    {"name": "宁波市阳光采购服务平台",     "category": "enterprise", "city": "宁波市"},
+    "shaoxing":  {"name": "绍兴市阳光采购服务平台",     "category": "enterprise", "city": "绍兴市"},
+    "yiwu":      {"name": "义乌市阳光招标采购平台",     "category": "enterprise", "city": "金华市"},
+    "jiaxing":   {"name": "嘉兴禾采联综合采购服务平台", "category": "enterprise", "city": "嘉兴市"},
+    "quzhou":    {"name": "衢州市阳光交易服务平台",     "category": "enterprise", "city": "衢州市"},
+    "huzhou":    {"name": "湖州市绿色采购服务平台",     "category": "enterprise", "city": "湖州市"},
+    "lishui":    {"name": "丽水市阳光采购服务平台",     "category": "enterprise", "city": "丽水市"},
+    "zcyxxw":    {"name": "浙江企业采购信息网",         "category": "enterprise", "city": None},
+}
+
+# 浙江省全部地级市列表（政府采购地级市筛选用）
+ZJ_CITIES = ["杭州市", "宁波市", "温州市", "嘉兴市", "湖州市", "绍兴市",
+             "金华市", "衢州市", "舟山市", "台州市", "丽水市"]
+
+
 # ====================== 平台筛选辅助函数 ======================
 @st.cache_data(ttl=3600, max_entries=1)  # 缓存1小时，平台列表很少变化
 def get_available_platforms():
@@ -3262,6 +3285,8 @@ def _start_background_task(task_type, **kwargs):
                 daily_limit = kwargs.get("daily_limit", SPIDER_CONFIG['daily_limit'])
                 days_before = kwargs.get("days_before", 7)
                 enabled_platforms = kwargs.get("enabled_platforms", None)
+                gov_cities = kwargs.get("gov_cities", None)
+                ent_cities = kwargs.get("ent_cities", None)
 
                 # 检查是否被停止
                 while not safe_get_session_state(config["stopped_key"]):
@@ -3276,7 +3301,8 @@ def _start_background_task(task_type, **kwargs):
 
                     try:
                         result = run_full_process_cli(daily_limit=daily_limit, days_before=days_before, model_type=None,
-                                                      enabled_platforms=enabled_platforms)
+                                                      enabled_platforms=enabled_platforms,
+                                                      gov_cities=gov_cities, ent_cities=ent_cities)
                         break  # 执行完成，退出循环
                     except KeyboardInterrupt:
                         log.warning("全流程执行被用户中断")
@@ -4149,27 +4175,95 @@ def render_process_execution():
 
     # 爬取设置（仅全流程和标书爬虫需要）
     if selected_process in ["全流程", "标书爬虫"]:
-        # 平台选择
-        available_platforms = get_available_platforms()
-        # “全部”=所有平台；“全部国企采购平台”=除政采云(zhejiang)外的所有平台
-        platform_options = ["全部", "全部国企采购平台"] + list(available_platforms.values())
-        selected_platform_name = st.selectbox(
-            "选择爬取平台",
-            options=platform_options,
-            index=0,
-            key="selected_platform_name"
-        )
+        # --- 平台选择（分组多选 + 各自独立地级市筛选） ---
+        _ = get_available_platforms()  # 触发平台注册
 
-        # 将平台选择转换为平台代码 / 平台列表
-        selected_platform_code = None          # 单一平台代码
-        enabled_platforms = None               # 平台列表（None=全部）
-        if selected_platform_name == "全部":
-            enabled_platforms = None
-        elif selected_platform_name == "全部国企采购平台":
-            enabled_platforms = [code for code in available_platforms if code != "zhejiang"]
-        else:
-            selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
-            enabled_platforms = [selected_platform_code] if selected_platform_code else None
+        # ========== 政府采购 ==========
+        st.markdown("**🏛️ 政府采购平台**")
+        gov_codes = [c for c, m in PLATFORM_META.items() if m["category"] == "government"]
+        gov_checked = {}
+        gov_cols = st.columns(max(len(gov_codes), 1))
+        for i, code in enumerate(gov_codes):
+            with gov_cols[i]:
+                gov_checked[code] = st.checkbox(
+                    PLATFORM_META[code]["name"], value=True, key=f"plat_{code}"
+                )
+
+        # 政府采购 → 自己的地级市筛选
+        if "_gov_all" not in st.session_state:
+            st.session_state["_gov_all"] = True
+        for city in ZJ_CITIES:
+            if f"g_{city}" not in st.session_state:
+                st.session_state[f"g_{city}"] = True
+
+        def _sync_gov():
+            v = st.session_state["_gov_all"]
+            for city in ZJ_CITIES:
+                st.session_state[f"g_{city}"] = v
+
+        st.checkbox("政府采购地级市 - 全选/全不选", key="_gov_all", on_change=_sync_gov)
+        gov_city_cols = st.columns(6)
+        for i, city in enumerate(ZJ_CITIES):
+            with gov_city_cols[i % 6]:
+                st.checkbox(city, key=f"g_{city}")
+        selected_gov_cities = [c for c in ZJ_CITIES if st.session_state.get(f"g_{c}", True)]
+
+        st.markdown("---")
+
+        # ========== 国企采购 ==========
+        st.markdown("**🏢 国企采购平台**")
+        ent_codes = [c for c, m in PLATFORM_META.items() if m["category"] == "enterprise"]
+        ent_checked = {}
+        ent_cols = st.columns(3)
+        for i, code in enumerate(ent_codes):
+            with ent_cols[i % 3]:
+                ent_checked[code] = st.checkbox(
+                    PLATFORM_META[code]["name"], value=True, key=f"plat_{code}"
+                )
+
+        # 国企采购 → 自己的地级市筛选
+        if "_ent_all" not in st.session_state:
+            st.session_state["_ent_all"] = True
+        for city in ZJ_CITIES:
+            if f"e_{city}" not in st.session_state:
+                st.session_state[f"e_{city}"] = True
+
+        def _sync_ent():
+            v = st.session_state["_ent_all"]
+            for city in ZJ_CITIES:
+                st.session_state[f"e_{city}"] = v
+
+        st.checkbox("国企采购地级市 - 全选/全不选", key="_ent_all", on_change=_sync_ent)
+        ent_city_cols = st.columns(6)
+        for i, city in enumerate(ZJ_CITIES):
+            with ent_city_cols[i % 6]:
+                st.checkbox(city, key=f"e_{city}")
+        selected_ent_cities = [c for c in ZJ_CITIES if st.session_state.get(f"e_{c}", True)]
+
+        # --- 构建 enabled_platforms ---
+        enabled_platforms = []
+        # 政府采购：勾了 checkbox + 有地级市 → 启用
+        for code, checked in gov_checked.items():
+            if checked and selected_gov_cities:
+                enabled_platforms.append(code)
+        # 国企采购：勾了 checkbox + 对应城市被选（city=None 如 zcyxxw 有地级市就启用）
+        for code, checked in ent_checked.items():
+            if not checked:
+                continue
+            c = PLATFORM_META[code]["city"]
+            if c is None:
+                if selected_ent_cities:
+                    enabled_platforms.append(code)
+            elif c in selected_ent_cities:
+                enabled_platforms.append(code)
+        enabled_platforms = list(dict.fromkeys(enabled_platforms))
+        _avail = get_available_platforms()
+        enabled_platforms = [c for c in enabled_platforms if c in _avail]
+        gov_cities = selected_gov_cities   # 政府采购城市
+        ent_cities = selected_ent_cities   # 国企采购城市
+
+        if not enabled_platforms:
+            st.warning("⚠️ 请至少选择一个平台或地级市")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -4196,18 +4290,20 @@ def render_process_execution():
         try:
             if selected_process == "全流程":
                 _start_background_task("全流程", daily_limit=crawl_quantity, days_before=crawl_days_before,
-                                       enabled_platforms=enabled_platforms)
+                                       enabled_platforms=enabled_platforms, gov_cities=gov_cities,
+                                       ent_cities=ent_cities)
                 st.success("✅ 全流程已启动，正在后台执行中...")
             elif selected_process == "标书爬虫":
                 # 检查爬虫是否已经在运行
-                if st.session_state.get('spider_running', False):
+                if st.session_state.get("spider_running", False):
                     st.warning("⚠️ 爬虫已在运行中，请先停止现有爬虫")
                     return
-                st.session_state['spider_running'] = False
-                st.session_state['spider_paused'] = False
-                # 保存平台选择：单一平台或平台列表
-                st.session_state['selected_platform_code'] = selected_platform_code
-                st.session_state['selected_enabled_platforms'] = enabled_platforms
+                st.session_state["spider_running"] = False
+                st.session_state["spider_paused"] = False
+                # 保存平台选择
+                st.session_state["selected_enabled_platforms"] = enabled_platforms
+                st.session_state["selected_gov_cities"] = gov_cities
+                st.session_state["selected_ent_cities"] = ent_cities
                 run_spider_with_progress()
             elif selected_process == "文件解析":
                 _start_background_task("文件解析")
@@ -4294,10 +4390,11 @@ def run_spider_with_progress():
 
         # 执行爬虫
         # 传递用户设置的总配额和时间范围给爬虫
-        spider_total = st.session_state.get('spider_total', SPIDER_CONFIG['daily_limit'])
+        spider_total = st.session_state.get("spider_total", SPIDER_CONFIG["daily_limit"])
         days_before = st.session_state.get("crawl_days_before", 7)  # 默认7天
-        selected_platform_code = st.session_state.get('selected_platform_code', None)
-        selected_enabled_platforms = st.session_state.get('selected_enabled_platforms', None)
+        selected_enabled_platforms = st.session_state.get("selected_enabled_platforms", None)
+        selected_gov_cities = st.session_state.get("selected_gov_cities", None)
+        selected_ent_cities = st.session_state.get("selected_ent_cities", None)
 
         from spider import SpiderManager
 
@@ -4305,28 +4402,22 @@ def run_spider_with_progress():
         projects = []
 
         try:
-            if selected_platform_code:
-                # 指定平台：仅运行该平台
-                safe_streamlit_update(
-                    status_text.info, f"📥 开始爬取平台：{selected_platform_code}"
-                )
-                spider = SpiderManager.create_spider(
-                    selected_platform_code,
-                    daily_limit=spider_total,
-                    days_before=days_before,
-                )
-                projects = spider.run()
+            if selected_enabled_platforms:
+                info_msg = f"📥 开始爬取 {len(selected_enabled_platforms)} 个平台"
+                if selected_gov_cities:
+                    info_msg += f"（政府采购: {', '.join(selected_gov_cities)}）"
+                if selected_ent_cities:
+                    info_msg += f"（国企采购: {', '.join(selected_ent_cities)}）"
+                safe_streamlit_update(status_text.info, info_msg)
             else:
-                # None=全部平台；列表=指定子集（如“全部国企采购平台”=除政采云外的所有平台）
-                if selected_enabled_platforms:
-                    safe_streamlit_update(status_text.info, "📥 开始爬取全部国企采购平台...")
-                else:
-                    safe_streamlit_update(status_text.info, "📥 开始爬取全部平台...")
-                projects = SpiderManager.run_all_spiders(
-                    days_before=days_before,
-                    enabled_platforms=selected_enabled_platforms,
-                    total_limit=spider_total,
-                )
+                safe_streamlit_update(status_text.info, "📥 开始爬取全部平台...")
+            projects = SpiderManager.run_all_spiders(
+                days_before=days_before,
+                enabled_platforms=selected_enabled_platforms,
+                total_limit=spider_total,
+                gov_cities=selected_gov_cities,
+                ent_cities=selected_ent_cities,
+            )
             total_count = len(projects)
             safe_streamlit_update(status_text.success, f"✅ 爬取完成，共获取 {total_count} 个项目")
             progress_bar.progress(1.0)
@@ -6103,6 +6194,60 @@ def render_task_scheduler():
         # 1. 创建新任务
         st.subheader("➕ 创建定时任务")
 
+        # ===== 平台和地级市选择（form 外面，callback 正常工作）=====
+        _ = get_available_platforms()  # 触发平台注册
+
+        # --- 政府采购 ---
+        st.markdown("**🏛️ 政府采购平台**")
+        gov_codes = [c for c, m in PLATFORM_META.items() if m["category"] == "government"]
+        for code in gov_codes:
+            st.checkbox(PLATFORM_META[code]["name"], value=True, key=f"task_plat_{code}")
+
+        if "_task_gov_all" not in st.session_state:
+            st.session_state["_task_gov_all"] = True
+        for city in ZJ_CITIES:
+            if f"tg_{city}" not in st.session_state:
+                st.session_state[f"tg_{city}"] = True
+
+        def _task_sync_gov():
+            v = st.session_state["_task_gov_all"]
+            for city in ZJ_CITIES:
+                st.session_state[f"tg_{city}"] = v
+
+        st.checkbox("政府采购地级市 - 全选/全不选", key="_task_gov_all", on_change=_task_sync_gov)
+        tg_cols = st.columns(6)
+        for i, city in enumerate(ZJ_CITIES):
+            with tg_cols[i % 6]:
+                st.checkbox(city, key=f"tg_{city}")
+
+        st.markdown("---")
+
+        # --- 国企采购 ---
+        st.markdown("**🏢 国企采购平台**")
+        ent_codes = [c for c, m in PLATFORM_META.items() if m["category"] == "enterprise"]
+        ent_cols = st.columns(3)
+        for i, code in enumerate(ent_codes):
+            with ent_cols[i % 3]:
+                st.checkbox(PLATFORM_META[code]["name"], value=True, key=f"task_plat_{code}")
+
+        if "_task_ent_all" not in st.session_state:
+            st.session_state["_task_ent_all"] = True
+        for city in ZJ_CITIES:
+            if f"te_{city}" not in st.session_state:
+                st.session_state[f"te_{city}"] = True
+
+        def _task_sync_ent():
+            v = st.session_state["_task_ent_all"]
+            for city in ZJ_CITIES:
+                st.session_state[f"te_{city}"] = v
+
+        st.checkbox("国企采购地级市 - 全选/全不选", key="_task_ent_all", on_change=_task_sync_ent)
+        te_cols = st.columns(6)
+        for i, city in enumerate(ZJ_CITIES):
+            with te_cols[i % 6]:
+                st.checkbox(city, key=f"te_{city}")
+
+        # ===== 任务参数 + 提交按钮（form 里面）=====
         with st.form("create_task_form"):
             col1, col2, col3 = st.columns(3)
 
@@ -6124,10 +6269,7 @@ def render_task_scheduler():
             with col3:
                 daily_limit = st.number_input(
                     "爬取数量限制",
-                    min_value=1,
-                    max_value=10000,
-                    value=300,
-                    step=10,
+                    min_value=1, max_value=10000, value=300, step=10,
                     help="每次执行时爬取的标书文件数量（默认300）"
                 )
 
@@ -6135,42 +6277,50 @@ def render_task_scheduler():
             with col4:
                 days_before = st.number_input(
                     "时间间隔（天）",
-                    min_value=0,
-                    max_value=365,
-                    value=0,
-                    step=1,
-                    help="爬取指定天数之前的文件（0表示只爬取当日文件，7表示爬取7天前及更早的文件）"
+                    min_value=0, max_value=365, value=0, step=1,
+                    help="爬取指定天数之前的文件（0表示只爬取当日文件）"
                 )
                 if days_before == 0:
-                    days_before = None  # 0表示不限制，只爬取当日文件
+                    days_before = None
 
             with col5:
                 enabled = st.checkbox("立即启用", value=True, help="创建后是否立即启用该任务")
 
-            # 平台选择
-            # “全部”=所有平台；“全部国企采购平台”=除政采云(zhejiang)外的所有平台（与主爬虫界面一致）
-            available_platforms = get_available_platforms()
-            platform_options = ["全部", "全部国企采购平台"] + list(available_platforms.values())
-            selected_platform_name = st.selectbox(
-                "选择爬取平台",
-                options=platform_options,
-                index=0,
-                help="选择要爬取的平台。'全部'=所有平台；'全部国企采购平台'=除政采云外的所有平台"
-            )
-
-            # 将平台名称转换为平台代码 / 平台列表
-            selected_platform_code = None
-            if selected_platform_name == "全部":
-                enabled_platforms = None
-            elif selected_platform_name == "全部国企采购平台":
-                enabled_platforms = [code for code in available_platforms if code != "zhejiang"]
-            else:
-                selected_platform_code = {v: k for k, v in available_platforms.items()}.get(selected_platform_name)
-                enabled_platforms = [selected_platform_code] if selected_platform_code else None
-
             submitted = st.form_submit_button("创建定时任务", width='stretch')
 
             if submitted:
+                # 从 session state 读取平台和城市（form 外面的 widget 状态）
+                _tg_all = st.session_state.get("_task_gov_all", True)
+                if _tg_all:
+                    task_gov_cities = list(ZJ_CITIES)
+                else:
+                    task_gov_cities = [c for c in ZJ_CITIES if st.session_state.get(f"tg_{c}", False)]
+
+                _te_all = st.session_state.get("_task_ent_all", True)
+                if _te_all:
+                    task_ent_cities = list(ZJ_CITIES)
+                else:
+                    task_ent_cities = [c for c in ZJ_CITIES if st.session_state.get(f"te_{c}", False)]
+
+                # 构建 enabled_platforms
+                task_enabled_platforms = []
+                for code in gov_codes:
+                    if st.session_state.get(f"task_plat_{code}", True) and task_gov_cities:
+                        task_enabled_platforms.append(code)
+                for code in ent_codes:
+                    if not st.session_state.get(f"task_plat_{code}", True):
+                        continue
+                    c = PLATFORM_META[code]["city"]
+                    if c is None:
+                        if task_ent_cities:
+                            task_enabled_platforms.append(code)
+                    elif c in task_ent_cities:
+                        task_enabled_platforms.append(code)
+                task_enabled_platforms = list(dict.fromkeys(task_enabled_platforms))
+                _avail2 = get_available_platforms()
+                task_enabled_platforms = [c for c in task_enabled_platforms if c in _avail2]
+                task_enabled_platforms = task_enabled_platforms or None
+
                 if not task_id or not task_id.strip():
                     st.error("❌ 任务ID不能为空")
                 else:
@@ -6180,7 +6330,9 @@ def render_task_scheduler():
                         daily_limit=int(daily_limit),
                         days_before=int(days_before) if days_before else None,
                         enabled=enabled,
-                        enabled_platforms=enabled_platforms
+                        enabled_platforms=task_enabled_platforms,
+                        gov_cities=task_gov_cities,
+                        ent_cities=task_ent_cities,
                     )
                     if success:
                         st.success(f"✅ {msg}")
@@ -6203,9 +6355,15 @@ def render_task_scheduler():
             for task in tasks:
                 days_before = task.get("days_before")
                 days_before_str = f"{days_before}天前" if days_before else "当日"
+                platforms_info = task.get("enabled_platforms")
+                platforms_display = ", ".join(platforms_info) if platforms_info else "全部"
+                gov_cities_info = task.get("gov_cities")
+                cities_display = ", ".join(gov_cities_info) if gov_cities_info else "不限"
                 task_data.append({
                     "任务ID": task.get("task_id", ""),
                     "执行时间": task.get("schedule_time", ""),
+                    "平台": platforms_display,
+                    "政采地级市": cities_display,
                     "爬取数量": task.get("daily_limit", 300),
                     "时间间隔": days_before_str,
                     "状态": task.get("status", "未知"),
@@ -6273,7 +6431,10 @@ def render_task_scheduler():
                             if st.button("🧪 测试执行", width='stretch'):
                                 success, msg = scheduler.test_task(
                                     daily_limit=selected_task.get("daily_limit", 300),
-                                    days_before=selected_task.get("days_before")
+                                    days_before=selected_task.get("days_before"),
+                                    enabled_platforms=selected_task.get("enabled_platforms"),
+                                    gov_cities=selected_task.get("gov_cities"),
+                                    ent_cities=selected_task.get("ent_cities"),
                                 )
                                 if success:
                                     st.success(msg)

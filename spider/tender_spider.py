@@ -21,9 +21,10 @@ class ZheJiangTenderSpider(BaseSpider):
     
     BASE_URL = "https://zfcg.czt.zj.gov.cn"
 
-    def __init__(self, daily_limit=None, days_before=None, **kwargs):
+    def __init__(self, daily_limit=None, days_before=None, gov_cities=None, **kwargs):
         # 调用父类初始化
         super().__init__(daily_limit=daily_limit, days_before=days_before, **kwargs)
+        self.gov_cities = gov_cities
         # 兼容性处理：忽略未使用的关键字参数，防止旧脚本或外部调用传入多余参数时报错。
         # 说明：政采云已解耦为「exe 下载」与「系统入库」两条独立链路——
         #   - exe 下载：run_zcy_download.py 每日 19:00 定时跑（获取编号→批量下载→合并 total_下载记录.csv）；
@@ -38,6 +39,7 @@ class ZheJiangTenderSpider(BaseSpider):
             db=self.db,
             daily_limit=self.daily_limit,
             days_before=self.days_before,
+            gov_cities=self.gov_cities,
         )
         self.crawled_count = len(projects)
         return projects
